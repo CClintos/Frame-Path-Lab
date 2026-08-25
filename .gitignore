@@ -1,0 +1,9 @@
+work/
+**/bin/
+**/obj/
+*.user
+*.suo
+.vs/
+outputs/FramePathLab-v*-win-x64-unsigned/
+outputs/*.zip
+outputs/New folder/

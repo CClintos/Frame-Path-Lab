@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="src/FramePathLab.Core/FramePathLab.Core.csproj" />
+  <Project Path="src/FramePathLab.Windows/FramePathLab.Windows.csproj" />
+  <Project Path="src/FramePathLab.App/FramePathLab.App.csproj" />
+  <Project Path="tools/FramePathLab.Cli/FramePathLab.Cli.csproj" />
+  <Project Path="tests/FramePathLab.Tests/FramePathLab.Tests.csproj" />
+</Solution>

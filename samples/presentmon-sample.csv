@@ -1,0 +1,21 @@
+Application,ProcessID,FrameTime,CPUBusy,GPUBusy,PresentMode,AllowsTearing
+cs2.exe,730,4.10,2.20,1.80,Hardware: Independent Flip,1
+cs2.exe,730,4.20,2.25,1.82,Hardware: Independent Flip,1
+cs2.exe,730,4.05,2.10,1.76,Hardware: Independent Flip,1
+cs2.exe,730,4.18,2.21,1.85,Hardware: Independent Flip,1
+cs2.exe,730,4.12,2.18,1.81,Hardware: Independent Flip,1
+cs2.exe,730,4.08,2.12,1.79,Hardware: Independent Flip,1
+cs2.exe,730,4.22,2.27,1.88,Hardware: Independent Flip,1
+cs2.exe,730,4.16,2.20,1.83,Hardware: Independent Flip,1
+cs2.exe,730,4.11,2.16,1.80,Hardware: Independent Flip,1
+cs2.exe,730,4.09,2.14,1.78,Hardware: Independent Flip,1
+cs2.exe,730,4.14,2.19,1.82,Hardware: Independent Flip,1
+cs2.exe,730,4.17,2.22,1.84,Hardware: Independent Flip,1
+cs2.exe,730,4.13,2.17,1.81,Hardware: Independent Flip,1
+cs2.exe,730,4.25,2.30,1.91,Hardware: Independent Flip,1
+cs2.exe,730,4.07,2.11,1.77,Hardware: Independent Flip,1
+cs2.exe,730,4.15,2.20,1.83,Hardware: Independent Flip,1
+cs2.exe,730,4.19,2.24,1.86,Hardware: Independent Flip,1
+cs2.exe,730,4.06,2.09,1.75,Hardware: Independent Flip,1
+cs2.exe,730,4.23,2.28,1.89,Hardware: Independent Flip,1
+cs2.exe,730,4.10,2.15,1.79,Hardware: Independent Flip,1

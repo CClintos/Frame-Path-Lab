@@ -1,0 +1,475 @@
+<Window x:Class="FramePathLab.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="FramePath Lab"
+        Width="1380"
+        Height="900"
+        MinWidth="1000"
+        MinHeight="700"
+        Style="{StaticResource MainWindowStyle}"
+        WindowStartupLocation="CenterScreen">
+    <Grid Background="{StaticResource WindowBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+                Background="#0E1622"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="0,0,0,1"
+                Padding="28,18">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Text="FRAMEPATH LAB" Style="{StaticResource EyebrowText}" />
+                    <TextBlock Text="Competitive FPS pre-game check"
+                               FontSize="24"
+                               FontWeight="SemiBold"
+                               Margin="0,3,0,0" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <Border Background="#143525"
+                            BorderBrush="#358763"
+                            BorderThickness="1"
+                            CornerRadius="14"
+                            Padding="11,5"
+                            HorizontalAlignment="Right">
+                        <TextBlock Text="READ-ONLY SCAN · EXPLICIT CHANGES"
+                                   Foreground="#82E6B1"
+                                   FontWeight="Bold"
+                                   FontSize="11" />
+                    </Border>
+                    <TextBlock Text="No admin access · no tweak bundles"
+                               Style="{StaticResource MutedText}"
+                               FontSize="11"
+                               Margin="0,5,0,0"
+                               HorizontalAlignment="Right" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <TabControl Grid.Row="1" Margin="24,0,24,12" SelectedIndex="0">
+            <TabItem Header="Pre-game">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              Padding="4,18,4,4">
+                    <StackPanel MaxWidth="1180" HorizontalAlignment="Stretch">
+                        <Border Style="{StaticResource CardBorder}"
+                                Background="#10263A"
+                                BorderBrush="#326586"
+                                Padding="22">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,24,0">
+                                    <TextBlock Text="YOUR SCAN RESULT" Style="{StaticResource EyebrowText}" />
+                                    <TextBlock Text="{Binding ReadinessHeadline}"
+                                               FontSize="29"
+                                               FontWeight="SemiBold"
+                                               Margin="0,6,0,0"
+                                               AutomationProperties.LiveSetting="Polite" />
+                                    <TextBlock Text="{Binding ReadinessDetail}"
+                                               Style="{StaticResource MutedText}"
+                                               FontSize="14"
+                                               TextWrapping="Wrap"
+                                               Margin="0,7,0,0" />
+                                    <TextBlock Text="{Binding HardwareSummary}"
+                                               FontWeight="SemiBold"
+                                               TextWrapping="Wrap"
+                                               Margin="0,14,0,0" />
+                                    <TextBlock Text="{Binding LastScanText}"
+                                               Style="{StaticResource MutedText}"
+                                               FontSize="12"
+                                               Margin="0,5,0,0" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Width="210" VerticalAlignment="Center">
+                                    <Button Content="{Binding ScanButtonText}"
+                                            Command="{Binding ScanCommand}"
+                                            AutomationProperties.HelpText="Runs a read-only system scan and refreshes every status card." />
+                                    <TextBlock Text="The scan makes no changes."
+                                               Style="{StaticResource MutedText}"
+                                               FontSize="11"
+                                               TextAlignment="Center"
+                                               Margin="0,5,0,0" />
+                                    <ProgressBar Height="4"
+                                                 Margin="3,10,3,0"
+                                                 IsIndeterminate="True"
+                                                 Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <Grid Margin="0,2,0,14">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Background="#172131" BorderBrush="#40536D" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,6,0">
+                                <StackPanel>
+                                    <TextBlock Text="1  SCAN" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" />
+                                    <TextBlock Text="Read current state" Style="{StaticResource MutedText}" FontSize="12" Margin="0,3,0,0" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="1" Background="#172131" BorderBrush="#40536D" BorderThickness="1" CornerRadius="8" Padding="14" Margin="2,0,4,0">
+                                <StackPanel>
+                                    <TextBlock Text="2  REVIEW" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" />
+                                    <TextBlock Text="See honest statuses" Style="{StaticResource MutedText}" FontSize="12" Margin="0,3,0,0" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="2" Background="#172131" BorderBrush="#40536D" BorderThickness="1" CornerRadius="8" Padding="14" Margin="4,0,2,0">
+                                <StackPanel>
+                                    <TextBlock Text="3  APPROVE" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" />
+                                    <TextBlock Text="Change one thing" Style="{StaticResource MutedText}" FontSize="12" Margin="0,3,0,0" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="3" Background="#172131" BorderBrush="#40536D" BorderThickness="1" CornerRadius="8" Padding="14" Margin="6,0,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="4  VERIFY" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" />
+                                    <TextBlock Text="Rescan or benchmark" Style="{StaticResource MutedText}" FontSize="12" Margin="0,3,0,0" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+
+                        <TextBlock Text="At a glance" FontSize="20" FontWeight="SemiBold" />
+                        <TextBlock Text="Unknown settings are labelled as manual checks—not guessed as disabled."
+                                   Style="{StaticResource MutedText}"
+                                   Margin="0,4,0,10" />
+
+                        <Grid Margin="0,0,0,16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Background="#143525" BorderBrush="#358763" BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,0,6,0">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding EnabledCount}" Foreground="#82E6B1" FontSize="28" FontWeight="Bold" />
+                                    <TextBlock Text="Ready / already set" Foreground="#C9F4DD" FontWeight="SemiBold" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="1" Background="#102D3A" BorderBrush="#357F9D" BorderThickness="1" CornerRadius="8" Padding="16" Margin="2,0,4,0">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding ActionCount}" Foreground="#7EDBFF" FontSize="28" FontWeight="Bold" />
+                                    <TextBlock Text="Change available" Foreground="#D0F3FF" FontWeight="SemiBold" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="2" Background="#3A2B0C" BorderBrush="#947331" BorderThickness="1" CornerRadius="8" Padding="16" Margin="4,0,2,0">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding ManualCount}" Foreground="#FFD477" FontSize="28" FontWeight="Bold" />
+                                    <TextBlock Text="Check manually" Foreground="#FFF0C9" FontWeight="SemiBold" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="3" Background="#3A171D" BorderBrush="#98505A" BorderThickness="1" CornerRadius="8" Padding="16" Margin="6,0,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding BlockedCount}" Foreground="#FF9F9A" FontSize="28" FontWeight="Bold" />
+                                    <TextBlock Text="Unavailable" Foreground="#FFD6D3" FontWeight="SemiBold" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Settings and checks" FontSize="22" FontWeight="SemiBold" />
+                                <TextBlock Text="Actionable and uncertain items appear first. Open Details for evidence and trade-offs."
+                                           Style="{StaticResource MutedText}"
+                                           Margin="0,4,0,0" />
+                            </StackPanel>
+                            <Border Grid.Column="1" Background="#182638" BorderBrush="#40536D" BorderThickness="1" CornerRadius="12" Padding="11,5" VerticalAlignment="Center">
+                                <TextBlock Text="ONE CHANGE AT A TIME" Foreground="#C8D5E5" FontSize="11" FontWeight="Bold" />
+                            </Border>
+                        </Grid>
+
+                        <ItemsControl ItemsSource="{Binding Tweaks}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Style="{StaticResource CardBorder}"
+                                            Background="{StaticResource PanelAltBrush}"
+                                            Padding="20">
+                                        <StackPanel>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Margin="0,0,16,0">
+                                                    <TextBlock Text="{Binding Category}" Style="{StaticResource EyebrowText}" />
+                                                    <TextBlock Text="{Binding Title}"
+                                                               FontSize="19"
+                                                               FontWeight="SemiBold"
+                                                               TextWrapping="Wrap"
+                                                               Margin="0,3,0,0" />
+                                                </StackPanel>
+                                                <Border Grid.Column="1"
+                                                        Background="{Binding StatusBackground}"
+                                                        BorderBrush="{Binding StatusBorder}"
+                                                        BorderThickness="1"
+                                                        CornerRadius="12"
+                                                        Padding="10,5"
+                                                        VerticalAlignment="Top">
+                                                    <TextBlock Text="{Binding StatusLabel}"
+                                                               Foreground="{Binding StatusForeground}"
+                                                               FontSize="11"
+                                                               FontWeight="Bold" />
+                                                </Border>
+                                            </Grid>
+
+                                            <Border Background="#0E1622"
+                                                    BorderBrush="#2E4058"
+                                                    BorderThickness="1"
+                                                    CornerRadius="6"
+                                                    Padding="13"
+                                                    Margin="0,14,0,0">
+                                                <StackPanel>
+                                                    <TextBlock Text="CURRENT" Style="{StaticResource EyebrowText}" Foreground="#AFC0D5" />
+                                                    <TextBlock Text="{Binding CurrentValue}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,3,0,0" />
+                                                    <TextBlock Text="RECOMMENDED NEXT STEP" Style="{StaticResource EyebrowText}" Foreground="#AFC0D5" Margin="0,11,0,0" />
+                                                    <TextBlock Text="{Binding RecommendedValue}" Foreground="#D8F5FF" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,3,0,0" />
+                                                </StackPanel>
+                                            </Border>
+
+                                            <TextBlock Text="{Binding Summary}"
+                                                       Style="{StaticResource MutedText}"
+                                                       FontSize="14"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,12,0,0" />
+
+                                            <Grid Margin="0,14,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding EvidenceLabel}"
+                                                           Foreground="#9FC7DC"
+                                                           FontSize="12"
+                                                           FontWeight="SemiBold"
+                                                           VerticalAlignment="Center"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,0,16,0" />
+                                                <Button Grid.Column="1"
+                                                        Content="{Binding ActionLabel}"
+                                                        Click="TweakAction_Click"
+                                                        IsEnabled="{Binding DataContext.AreActionsEnabled, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        Visibility="{Binding HasAction, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                                        AutomationProperties.HelpText="Opens a supported setting or starts an explicitly approved reversible experiment." />
+                                            </Grid>
+
+                                            <Expander Header="Details: why it may matter and risks" Margin="0,10,0,0">
+                                                <Border Background="#101824" CornerRadius="6" Padding="13" Margin="0,8,0,0">
+                                                    <StackPanel>
+                                                        <TextBlock Text="WHY IT MAY MATTER" Style="{StaticResource EyebrowText}" />
+                                                        <TextBlock Text="{Binding WhyItMatters}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                                        <TextBlock Text="DOWNSIDES / FAILURE MODES" Style="{StaticResource EyebrowText}" Foreground="#FFD477" Margin="0,12,0,0" />
+                                                        <TextBlock Text="{Binding Risk}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                                        <TextBlock Text="After a manual change, return here and scan again. Keep it only if the state is verified and a repeatable benchmark improves."
+                                                                   Foreground="#C5A3FF"
+                                                                   TextWrapping="Wrap"
+                                                                   Margin="0,12,0,0" />
+                                                    </StackPanel>
+                                                </Border>
+                                            </Expander>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Measure frame pacing">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="4,18,4,4">
+                    <StackPanel MaxWidth="1120" HorizontalAlignment="Stretch">
+                        <Border Style="{StaticResource CardBorder}" Background="#10263A" BorderBrush="#326586">
+                            <StackPanel>
+                                <TextBlock Text="MEASURE BEFORE YOU KEEP A CHANGE" Style="{StaticResource EyebrowText}" />
+                                <TextBlock Text="Analyze a bounded PresentMon-style CSV"
+                                           FontSize="23"
+                                           FontWeight="SemiBold"
+                                           Margin="0,5,0,0" />
+                                <TextBlock Text="This reports software frame-delivery timing and pacing. It does not claim physical mouse-to-photon latency or causal improvement from one capture."
+                                           Style="{StaticResource MutedText}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,7,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardBorder}">
+                            <StackPanel>
+                                <TextBlock Text="1. Select a capture" FontSize="18" FontWeight="SemiBold" />
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Text="{Binding SelectedCapturePath, UpdateSourceTrigger=PropertyChanged}"
+                                             MinHeight="44"
+                                             VerticalContentAlignment="Center" />
+                                    <Button Grid.Column="1" Content="Browse…" Style="{StaticResource SecondaryButton}" Margin="8,0,0,0" Click="BrowseCapture_Click" />
+                                    <Button Grid.Column="2" Content="Analyze" Command="{Binding AnalyzeCommand}" Margin="8,0,0,0" />
+                                </Grid>
+                                <TextBlock Text="{Binding CaptureSummary}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,12,0,0" />
+                                <ItemsControl ItemsSource="{Binding Warnings}" Margin="0,8,0,0">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" Foreground="#FFD477" TextWrapping="Wrap" Margin="0,2,0,0" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Text="2. Review frame-time metrics" FontSize="20" FontWeight="SemiBold" Margin="0,4,0,10" />
+                        <DataGrid ItemsSource="{Binding Metrics}" MinHeight="320" MaxHeight="520">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Metric" Binding="{Binding Label}" Width="1.7*" />
+                                <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="*" />
+                                <DataGridTextColumn Header="Availability" Binding="{Binding Availability}" Width="1.4*" />
+                                <DataGridTextColumn Header="Definition" Binding="{Binding Formula}" Width="3*" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Technical evidence">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="4,18,4,4">
+                    <StackPanel MaxWidth="1120" HorizontalAlignment="Stretch">
+                        <Border Style="{StaticResource CardBorder}" Background="#10263A" BorderBrush="#326586">
+                            <StackPanel>
+                                <TextBlock Text="TECHNICAL VIEW" Style="{StaticResource EyebrowText}" />
+                                <TextBlock Text="Raw scan facts and evidence boundaries" FontSize="23" FontWeight="SemiBold" Margin="0,5,0,0" />
+                                <TextBlock Text="This page is for auditability. The Pre-game page translates these findings into user-facing statuses and safe next steps."
+                                           Style="{StaticResource MutedText}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,7,0,0" />
+                                <TextBlock Text="{Binding ScanSummary}" TextWrapping="Wrap" Margin="0,12,0,0" />
+                                <TextBlock Text="{Binding PlatformText, StringFormat=Platform: {0}}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,6,0,0" />
+                                <TextBlock Text="{Binding PrimaryDisplayText, StringFormat=Display: {0}}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,3,0,0" />
+                                <TextBlock Text="{Binding Cs2Text, StringFormat=Game: {0}}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,3,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <ItemsControl ItemsSource="{Binding Findings}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Style="{StaticResource CardBorder}">
+                                        <StackPanel>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Title}" FontSize="17" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,16,0" />
+                                                <Border Grid.Column="1" Background="#203047" CornerRadius="10" Padding="9,4">
+                                                    <TextBlock Text="{Binding Disposition}" Foreground="#DCE7F5" FontSize="11" FontWeight="Bold" />
+                                                </Border>
+                                            </Grid>
+                                            <TextBlock Text="{Binding Summary}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,8,0,0" />
+                                            <TextBlock Text="{Binding ObservedState, StringFormat=Observed: {0}}" TextWrapping="Wrap" Margin="0,8,0,0" />
+                                            <TextBlock Foreground="#9FC7DC" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0">
+                                                <Run Text="Provenance: " /><Run Text="{Binding Provenance, Mode=OneWay}" />
+                                                <Run Text=" · Evidence: " /><Run Text="{Binding EvidenceQuality, Mode=OneWay}" />
+                                                <Run Text=" · Causal decision: " /><Run Text="{Binding CanProduceCausalDecision, Mode=OneWay}" />
+                                            </TextBlock>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Safety &amp; data">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="4,18,4,4">
+                    <StackPanel MaxWidth="1120" HorizontalAlignment="Stretch">
+                        <Border Style="{StaticResource CardBorder}" Background="#271C11" BorderBrush="#8A642D">
+                            <StackPanel>
+                                <TextBlock Text="SAFETY BOUNDARY" Style="{StaticResource EyebrowText}" Foreground="#FFD477" />
+                                <TextBlock Text="No anti-cheat risk shortcuts or placebo packs"
+                                           FontSize="23"
+                                           FontWeight="SemiBold"
+                                           Margin="0,5,0,0" />
+                                <TextBlock TextWrapping="Wrap" Style="{StaticResource MutedText}" Margin="0,8,0,0"
+                                           Text="FramePath Lab does not inject into games, manipulate memory or packets, automate input, edit CS2 files, force timer/HPET modes, apply priority or affinity folklore, disable security features, remove services, or install network/registry tweak packs." />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardBorder}">
+                            <StackPanel>
+                                <TextBlock Text="Automatic system changes" FontSize="19" FontWeight="SemiBold" />
+                                <TextBlock TextWrapping="Wrap" Style="{StaticResource MutedText}" Margin="0,7,0,0"
+                                           Text="This build has one automatic action: an explicitly approved, 15-minute switch to an already-installed standard Windows High performance plan. It records the exact previous state, verifies the write, arms an independent rollback guardian, and restores with compare-before-write safeguards. It never elevates itself or creates or edits a plan." />
+                                <TextBlock Text="{Binding PowerSessionText}" Foreground="#82E6B1" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,10,0,0" />
+                                <TextBlock Text="{Binding PowerEligibilityText}" Foreground="#FFD477" TextWrapping="Wrap" Margin="0,5,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardBorder}">
+                            <StackPanel>
+                                <TextBlock Text="Local-only data" FontSize="19" FontWeight="SemiBold" />
+                                <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,0">
+                                    <Run Text="Derived scan and capture history is stored under: " /><Run Text="{Binding DataDirectory, Mode=OneWay}" />
+                                </TextBlock>
+                                <TextBlock Text="Raw imported captures are analyzed in place and are not copied. The app has no account, cloud telemetry, updater, service, scheduled task, or startup entry."
+                                           Style="{StaticResource MutedText}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,5,0,0" />
+                                <WrapPanel Margin="0,12,0,0">
+                                    <Button Content="Export local report" Style="{StaticResource SecondaryButton}" Click="ExportReport_Click" Margin="0,0,8,0" />
+                                    <Button Content="Refresh history" Command="{Binding RefreshHistoryCommand}" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0" />
+                                    <Button Content="Delete derived history" Style="{StaticResource DangerButton}" Click="DeleteHistory_Click" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Text="Local history" FontSize="20" FontWeight="SemiBold" Margin="0,4,0,10" />
+                        <DataGrid ItemsSource="{Binding History}" MinHeight="250" MaxHeight="420">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="When (UTC)" Binding="{Binding CreatedAtUtc, StringFormat=yyyy-MM-dd HH:mm}" Width="1.2*" />
+                                <DataGridTextColumn Header="Type" Binding="{Binding Kind}" Width="*" />
+                                <DataGridTextColumn Header="Title" Binding="{Binding Title}" Width="2*" />
+                                <DataGridTextColumn Header="Outcome" Binding="{Binding Outcome}" Width="1.3*" />
+                                <DataGridTextColumn Header="SHA-256" Binding="{Binding SourceSha256}" Width="2*" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+
+        <Border Grid.Row="2"
+                Background="#0E1622"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="22,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Ellipse Width="9" Height="9" Fill="{StaticResource AccentBrush}" VerticalAlignment="Center" Margin="0,0,10,0" />
+                <TextBlock Grid.Column="1"
+                           Text="{Binding StatusText}"
+                           Foreground="#C7D3E1"
+                           TextTrimming="CharacterEllipsis"
+                           AutomationProperties.LiveSetting="Polite" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
