@@ -1,4 +1,5 @@
 using FramePathLab.Core.Abstractions;
+using FramePathLab.Core.Analysis;
 using FramePathLab.Core.Evidence;
 using FramePathLab.Core.Models;
 using FramePathLab.Core.Persistence;
@@ -17,13 +18,21 @@ public sealed class ExpertTweakEngine
     private readonly IMutationExecutor _executor;
     private readonly TweakJournalStore _journal;
     private readonly bool _isElevated;
+    private readonly IMutationGuard _guard;
     private readonly object _operationGate = new();
 
-    public ExpertTweakEngine(IMutationExecutor executor, TweakJournalStore journal, bool isElevated)
+    public ExpertTweakEngine(
+        IMutationExecutor executor,
+        TweakJournalStore journal,
+        bool isElevated,
+        IMutationGuard? guard = null)
     {
         _executor = executor ?? throw new ArgumentNullException(nameof(executor));
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
         _isElevated = isElevated;
+
+        // Defaults to the sealed allowlist. Only a test supplies anything else.
+        _guard = guard ?? AllowlistMutationGuard.Instance;
     }
 
     public IReadOnlyList<ExpertTweakCard> Evaluate(ExpertScanContext context)
@@ -43,23 +52,23 @@ public sealed class ExpertTweakEngine
             return card;
         }
 
-        // The desktop/CLI process reads a user-writable journal. Running the whole process elevated
-        // would turn that data into a privileged command channel. Machine writes require a future
-        // restricted broker that resolves allowlisted action IDs rather than trusting paths.
-        if (_isElevated)
+        // The ledger is user-writable data that a restore replays, so an elevated process must not
+        // take its targets on trust. Rather than refusing privileged writes altogether — which
+        // would leave half the catalogue permanently unreachable — every target is checked against
+        // a compiled-in allowlist here and again immediately before each write and each restore.
+        var violation = card.Plan
+            .Select(_guard.FindViolation)
+            .FirstOrDefault(problem => problem is not null);
+        if (violation is not null)
         {
-            return card with
-            {
-                BlockedReason = "Automatic expert writes are disabled while the full application is elevated. "
-                                + "Run normally; machine-scope writes require a future restricted broker."
-            };
+            return card with { BlockedReason = $"Refused by the write allowlist: {violation}" };
         }
 
-        return card.Plan.Any(_executor.RequiresElevation)
+        return !_isElevated && card.Plan.Any(_executor.RequiresElevation)
             ? card with
             {
-                BlockedReason = "Machine-scope writes are unavailable in this build. Do not restart the full app "
-                                + "as administrator; a future restricted broker must own privileged actions."
+                BlockedReason = "Machine-scope change. Restart FramePath Lab as administrator to apply it; "
+                                + "every privileged write is still checked against the allowlist first."
             }
             : card;
     }
@@ -74,6 +83,80 @@ public sealed class ExpertTweakEngine
         lock (_operationGate)
         {
             return ApplyCore(card);
+        }
+    }
+
+    /// <summary>
+    /// Applies every card whose disposition is a recommended default and which this machine
+    /// actually needs.
+    ///
+    /// Experiments are deliberately excluded: their value depends on measurement, so applying a
+    /// batch of them together would make any subsequent capture impossible to attribute. Each card
+    /// still becomes its own transaction, so one can be reverted without disturbing the others.
+    /// </summary>
+    public IReadOnlyList<TweakTransaction> ApplyRecommendedDefaults(IEnumerable<ExpertTweakCard> cards)
+    {
+        ArgumentNullException.ThrowIfNull(cards);
+        var applied = new List<TweakTransaction>();
+        lock (_operationGate)
+        {
+            foreach (var card in cards.Where(candidate =>
+                         candidate.Definition.Disposition == TweakDisposition.RecommendDefault
+                         && candidate.CanApply))
+            {
+                try
+                {
+                    applied.Add(ApplyCore(card));
+                }
+                catch (Exception exception) when (exception is InvalidOperationException or UnauthorizedAccessException)
+                {
+                    // One refused card must not abandon the rest; each is independent.
+                    applied.Add(new TweakTransaction(
+                        Guid.Empty,
+                        card.Definition.Id,
+                        card.Definition.Title,
+                        DateTimeOffset.UtcNow,
+                        null,
+                        false,
+                        [],
+                        TweakTransaction.StateRevertFailed,
+                        $"Not applied: {exception.Message}"));
+                }
+            }
+        }
+
+        return applied;
+    }
+
+    /// <summary>
+    /// Measures one recorded change against a pair of captures and, when the evidence says the
+    /// change was not worth keeping, reverses it.
+    ///
+    /// This closes the loop the rest of the product only half-completes: applying a change with a
+    /// rollback record is useful, but deciding whether to keep it from a measurement rather than
+    /// from a claim is the part no settings guide can offer.
+    /// </summary>
+    public (TweakVerification Verification, TweakTransaction? Reverted) Verify(
+        Guid transactionId,
+        CaptureAnalysis before,
+        CaptureAnalysis after,
+        bool revertOnFailure)
+    {
+        lock (_operationGate)
+        {
+            var transaction = _journal.Read().FirstOrDefault(entry => entry.TransactionId == transactionId)
+                              ?? throw new InvalidOperationException("No such transaction is recorded.");
+
+            var verification = TweakVerifier.Compare(before, after, transaction);
+            if (!revertOnFailure || !verification.ShouldRevert || !transaction.IsOutstanding)
+            {
+                return (verification, null);
+            }
+
+            var reverted = RevertCore(
+                transactionId,
+                $"measured verdict: {verification.Verdict}");
+            return (verification, reverted);
         }
     }
 
@@ -97,6 +180,17 @@ public sealed class ExpertTweakEngine
         {
             throw new InvalidOperationException(
                 $"{overlap.Description} already has an outstanding transaction. Revert it before applying another change.");
+        }
+
+        // Re-check at the point of use, not just at evaluation, so a card that was constructed
+        // elsewhere or mutated in between cannot reach a write.
+        foreach (var plan in card.Plan)
+        {
+            var violation = _guard.FindViolation(plan);
+            if (violation is not null)
+            {
+                throw new InvalidOperationException($"Refused by the write allowlist: {violation}");
+            }
         }
 
         var transactionId = Guid.NewGuid();
@@ -201,13 +295,6 @@ public sealed class ExpertTweakEngine
 
     private TweakTransaction RevertCore(Guid transactionId, string reason)
     {
-        if (_isElevated)
-        {
-            throw new InvalidOperationException(
-                "Journal-driven expert reverts are disabled while the full application is elevated. "
-                + "Run normally; privileged recovery requires a future restricted allowlisted broker.");
-        }
-
         var transaction = _journal.Read().FirstOrDefault(entry => entry.TransactionId == transactionId)
                           ?? throw new InvalidOperationException("No such transaction is recorded.");
 
@@ -221,6 +308,20 @@ public sealed class ExpertTweakEngine
             {
                 // Captured but never written, so there is nothing to undo and nothing to fail.
                 reverted.Insert(0, record with { Observation = "Skipped: this value was never written." });
+                continue;
+            }
+
+            // The ledger is untrusted input on the way back out. A record naming a location this
+            // application may not write is refused rather than replayed, which is what stops an
+            // edited ledger from choosing where a privileged restore writes.
+            var violation = _guard.FindViolation(record);
+            if (violation is not null)
+            {
+                failures++;
+                reverted.Insert(0, record with
+                {
+                    Observation = $"Refused by the write allowlist: {violation}"
+                });
                 continue;
             }
 

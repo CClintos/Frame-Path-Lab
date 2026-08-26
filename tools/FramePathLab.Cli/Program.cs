@@ -39,6 +39,8 @@ internal static class Program
                 "report" => await ReportAsync(args),
                 "expert" => await ExpertScanAsync(args),
                 "expert-apply" => await ExpertApplyAsync(args),
+                "expert-apply-all" => await ExpertApplyAllAsync(),
+                "expert-verify" => await ExpertVerifyAsync(args),
                 "expert-revert" => await ExpertRevertAsync(args),
                 "expert-history" => ExpertHistory(),
                 _ => UnknownCommand(args[0])
@@ -201,6 +203,62 @@ internal static class Program
         return transaction.State == TweakTransaction.StateApplied ? 0 : 1;
     }
 
+    private static async Task<int> ExpertApplyAllAsync()
+    {
+        var engine = BuildEngine();
+        var context = await BuildContextAsync(measureInput: false);
+        var cards = engine.Evaluate(context);
+        var applied = engine.ApplyRecommendedDefaults(cards);
+
+        if (applied.Count == 0)
+        {
+            Console.Error.WriteLine(
+                "Nothing to apply: every recommended default is already set, or is blocked. Run 'expert' to see why.");
+            return 1;
+        }
+
+        Console.WriteLine(JsonSerializer.Serialize(applied, JsonOptions));
+        return applied.All(entry => entry.State == TweakTransaction.StateApplied) ? 0 : 1;
+    }
+
+    private static async Task<int> ExpertVerifyAsync(string[] args)
+    {
+        // expert-verify <transaction-id|any> <before.csv> <after.csv> [--revert-on-failure]
+        if (args.Length is < 4 or > 5)
+        {
+            PrintUsage();
+            return 2;
+        }
+
+        var analyzer = new PresentMonCsvAnalyzer();
+        var before = await analyzer.AnalyzeAsync(args[2], new CaptureAnalysisOptions());
+        var after = await analyzer.AnalyzeAsync(args[3], new CaptureAnalysisOptions());
+        var revertOnFailure = args.Contains("--revert-on-failure", StringComparer.OrdinalIgnoreCase);
+
+        if (string.Equals(args[1], "any", StringComparison.OrdinalIgnoreCase))
+        {
+            // Comparing two captures without attributing the difference to a recorded change.
+            var standalone = TweakVerifier.Compare(before, after);
+            Console.WriteLine(JsonSerializer.Serialize(standalone, JsonOptions));
+            return standalone.Verdict == VerificationVerdict.NotComparable ? 2 : 0;
+        }
+
+        if (!Guid.TryParse(args[1], out var transactionId))
+        {
+            Console.Error.WriteLine("The first argument must be a transaction id or the word 'any'.");
+            return 2;
+        }
+
+        var (verification, reverted) = BuildEngine().Verify(transactionId, before, after, revertOnFailure);
+        Console.WriteLine(JsonSerializer.Serialize(new { verification, reverted }, JsonOptions));
+        return verification.Verdict switch
+        {
+            VerificationVerdict.NotComparable => 2,
+            VerificationVerdict.Regressed or VerificationVerdict.NoMeasuredChange => 1,
+            _ => 0
+        };
+    }
+
     private static Task<int> ExpertRevertAsync(string[] args)
     {
         var engine = BuildEngine();
@@ -243,7 +301,10 @@ internal static class Program
         Console.WriteLine("  report <capture.csv> <new-report.md>");
         Console.WriteLine("  expert [--measure-input]       read-only expert-tier scan");
         Console.WriteLine("  expert-apply <tweak-id>        apply one tweak, journalled");
+        Console.WriteLine("  expert-apply-all               apply every recommended default this PC needs");
         Console.WriteLine("  expert-revert <id|all>         undo a recorded transaction");
         Console.WriteLine("  expert-history                 list every recorded transaction");
+        Console.WriteLine("  expert-verify <id|any> <before.csv> <after.csv> [--revert-on-failure]");
+        Console.WriteLine("                                 measure a change against two captures");
     }
 }

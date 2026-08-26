@@ -55,6 +55,20 @@ For someone whose ranking is their income the failure mode is not a missing twea
 
 Roughly thirty research candidates span CPU/power policy, timing, GPU/presentation, display, input, background activity, and network context. Unsupported registry writes, security reductions, game-process manipulation, raw NIC/driver changes, MMCSS folklore, and timer myths remain visible as **Excluded** with no Apply plan. The retained power-policy experiments show their literal supported writes before approval.
 
+### Verify — did the change actually do anything?
+
+This is the part a settings guide cannot do. Anyone can list registry values; nobody watching a video can tell whether they did anything on *your* machine, so the honest answer to "did that help?" has always been a shrug. Capture the same scenario either side of one recorded change and the shrug becomes a number.
+
+The verdict follows the **tails**, not the average. A change that lifts mean frame rate while widening P99 is a change a competitive player should reject, and that case is common enough that judging by average frame rate is actively misleading. Movement smaller than run-to-run noise is reported as *no measured change* rather than as a win, and a single pair is never called proof — an improvement is reported as worth keeping and worth repeating.
+
+```powershell
+.\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert-apply-all
+# play a round, capture before and after
+.\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert-verify <transaction-id> before.csv after.csv --revert-on-failure
+```
+
+With `--revert-on-failure` a change that regressed or did nothing is undone automatically from the ledger. Pass `any` instead of a transaction id to compare two captures without attributing the difference to a recorded change.
+
 Headless equivalents:
 
 ```powershell
@@ -73,7 +87,17 @@ Deliberately deferred:
 
 ## Safety boundary
 
-The expert tier fails closed through an evidence policy. Most cards are read-only or guided. A small set of supported power-policy candidates can be offered only as temporary A/B experiments; every retained write is explicit, individually approved, and reversible.
+The expert tier writes system state. What gates a write is safety and reversibility, not certainty of benefit:
+
+1. the surface is documented or exposed in a supported user interface,
+2. the exact prior value can be captured and restored, and
+3. it regresses no security guarantee and cannot leave a device unable to start.
+
+Requiring proof that a change helps *before* allowing the change would make the product unable to produce the evidence that would satisfy it — which collapses into an advice list, and an advice list is the one thing a player can already get for free and cannot trust. Whether a change helps is answered by measuring it afterwards, which is what **Verify** exists for.
+
+Every target is additionally checked against a compiled-in allowlist immediately before each write and each restore. This matters because the ledger is user-writable data that a restore replays: without an independent check it would be a command channel rather than a record, and its integrity hash cannot close that, since whoever can rewrite the file can recompute the hash. The allowlist is why privileged writes can be permitted at all instead of being disabled wholesale.
+
+Still never written: anything reaching into the running game, memory integrity, display-driver interrupt edits, boot configuration, and the MMCSS task values Microsoft documents as unused.
 
 The contract for all of them is identical:
 

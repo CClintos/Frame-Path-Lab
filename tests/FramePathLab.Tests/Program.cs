@@ -58,7 +58,13 @@ internal static class Program
         ("Audio endpoints report a plausible shared format", TestAudioEndpointsAsync),
         ("Panel identity is self-consistent", TestPanelIdentityAsync),
         ("Driver profile degrades cleanly when absent", TestNvidiaProfileAsync),
-        ("Excluded tweaks never offer a mutation", TestDebunkRegisterAsync)
+        ("Excluded tweaks never offer a mutation", TestDebunkRegisterAsync),
+        ("Allowlist refuses targets outside the catalogue", TestMutationAllowlistAsync),
+        ("Engine refuses an off-allowlist write and revert", TestAllowlistBlocksTamperedLedgerAsync),
+        ("Policy leaves the catalogue able to act", TestPolicyLeavesWritableTweaksAsync),
+        ("Verifier reports no measured change inside noise", TestVerifierNoChangeAsync),
+        ("Verifier flags a tail regression", TestVerifierRegressionAsync),
+        ("Verifier refuses incomparable captures", TestVerifierRefusesMismatchAsync)
     ];
 
     public static async Task<int> Main()
@@ -661,6 +667,27 @@ internal static class Program
 
     private const string TestRegistryPath = @"HKCU\Software\FramePathLabTests";
 
+    /// <summary>
+    /// Permits the scratch key these tests write, and nothing else. Production always uses the
+    /// sealed allowlist; this exists so the engine can be exercised without the test key ever
+    /// being reachable in a shipped build.
+    /// </summary>
+    private sealed class ScratchGuard : IMutationGuard
+    {
+        public string? FindViolation(MutationPlan plan)
+            => Check(plan.Kind, plan.Target, plan.ValueName);
+
+        public string? FindViolation(MutationRecord record)
+            => Check(record.Kind, record.Target, record.ValueName);
+
+        private static string? Check(MutationKind kind, string target, string valueName)
+            => kind == MutationKind.RegistryValue
+               && target.StartsWith(TestRegistryPath, StringComparison.OrdinalIgnoreCase)
+                ? null
+                : MutationAllowlist.FindViolation(kind, target, valueName);
+    }
+
+
     private static MutationPlan TestRegistryPlan(string valueName, string desired)
         => new(
             $"test.{valueName}",
@@ -802,7 +829,7 @@ internal static class Program
             await WithTemporaryDirectoryAsync(directory =>
             {
                 var engine = new ExpertTweakEngine(
-                    new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: false);
+                    new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: false, new ScratchGuard());
 
                 var card = BuildTestCard("ENGINE-001", [
                     TestRegistryPlan("EngineA", "1"),
@@ -835,7 +862,8 @@ internal static class Program
         await WithTemporaryDirectoryAsync(directory =>
         {
             var engine = new ExpertTweakEngine(
-                new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: false);
+                new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: false,
+                new ScratchGuard());
 
             var machinePlan = new MutationPlan(
                 "test.machine",
@@ -854,14 +882,28 @@ internal static class Program
             Assert(gated!.BlockedReason is not null, "machine-scope write must be blocked without elevation");
             Assert(!gated.CanApply, "blocked card must not be applicable");
 
+            // Elevated, the same machine-scope write proceeds — the ledger is not trusted to name
+            // its own target, so elevation is safe without disabling privileged writes entirely.
             var elevatedEngine = new ExpertTweakEngine(
-                new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: true);
+                new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: true, new ScratchGuard());
             var elevated = typeof(ExpertTweakEngine)
                 .GetMethod("GateOnElevation", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
                 .Invoke(elevatedEngine, [BuildTestCard("ELEV-UI-001", [TestRegistryPlan("Elevated", "1")])])
                 as ExpertTweakCard;
-            Assert(elevated?.BlockedReason?.Contains("full application is elevated", StringComparison.Ordinal) == true,
-                "the elevated full process must not become a journal-driven privileged writer");
+            Assert(elevated?.BlockedReason is null,
+                "an allowlisted write must not be blocked merely because the process is elevated");
+            Assert(elevated!.CanApply, "an allowlisted elevated write must remain applicable");
+
+            // What elevation must never buy is a target off the allowlist.
+            var offList = typeof(ExpertTweakEngine)
+                .GetMethod("GateOnElevation", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                .Invoke(
+                    new ExpertTweakEngine(
+                        new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: true),
+                    [BuildTestCard("ELEV-ROGUE-001", [TestRegistryPlan("Rogue", "1")])])
+                as ExpertTweakCard;
+            Assert(offList?.BlockedReason?.Contains("allowlist", StringComparison.OrdinalIgnoreCase) == true,
+                "elevation must not permit a target outside the allowlist");
             return Task.CompletedTask;
         });
     }
@@ -874,20 +916,21 @@ internal static class Program
             await WithTemporaryDirectoryAsync(directory =>
             {
                 var engine = new ExpertTweakEngine(
-                    new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: false);
+                    new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: false, new ScratchGuard());
 
-                // The second mutation reads cleanly (the process simply is not running) but cannot
-                // be written, so the first one lands and then the tweak fails mid-apply.
+                // The second mutation passes the allowlist and captures cleanly, but its value
+                // cannot be written as the declared type, so the first one lands and the tweak
+                // then fails mid-apply.
                 var card = BuildTestCard("PARTIAL-001", [
                     TestRegistryPlan("PartialA", "5"),
                     new MutationPlan(
-                        "test.absent-process",
-                        MutationKind.ProcessAffinity,
-                        "framepathlab-no-such-process",
-                        "ProcessorAffinity",
-                        "1",
-                        "Mask",
-                        "affinity on a process that is not running")
+                        "test.unwritable",
+                        MutationKind.RegistryValue,
+                        TestRegistryPath,
+                        "PartialB",
+                        "not-a-number",
+                        "DWord",
+                        "a value that cannot be written as the declared type")
                 ]);
 
                 var result = engine.Apply(card);
@@ -899,7 +942,7 @@ internal static class Program
                 Assert(!exists, "the mutation that did land must be undone");
                 Assert(
                     result.Mutations.Any(record =>
-                        record.MutationId == "test.absent-process"
+                        record.MutationId == "test.unwritable"
                         && record.AttemptedWrite
                         && record.VerifiedAfterWrite),
                     "a durable write intent must be conservatively reverted even when the write throws");
@@ -920,16 +963,20 @@ internal static class Program
             await WithTemporaryDirectoryAsync(directory =>
             {
                 var journal = new TweakJournalStore(directory);
-                var engine = new ExpertTweakEngine(new WindowsMutationExecutor(), journal, isElevated: false);
 
                 // An unreadable target means no before-state can be captured, so nothing may be
                 // written at all: applying it would create a change that could never be undone.
+                var executor = new FailingCaptureExecutor(new WindowsMutationExecutor(), "test.uncapturable");
+                var engine = new ExpertTweakEngine(executor, journal, isElevated: false, new ScratchGuard());
+
                 var card = BuildTestCard("FAILCLOSED-001", [
                     TestRegistryPlan("NeverWritten", "5"),
-                    new MutationPlan("test.bad-hive", MutationKind.RegistryValue, @"HKXX\Nope", "V", "1", "DWord", "bad")
+                    new MutationPlan(
+                        "test.uncapturable", MutationKind.RegistryValue, TestRegistryPath, "Uncapturable",
+                        "1", "DWord", "a value whose before-state cannot be read")
                 ]);
 
-                AssertThrows<ArgumentException>(() => engine.Apply(card));
+                AssertThrows<InvalidOperationException>(() => engine.Apply(card));
 
                 new WindowsMutationExecutor().Read(TestRegistryPlan("NeverWritten", "0"), out var exists);
                 Assert(!exists, "no value may be written when a before-state cannot be captured");
@@ -955,7 +1002,7 @@ internal static class Program
                 var executor = new IntentObservingExecutor(inner, plan =>
                     journal.Read().Any(transaction => transaction.Mutations.Any(record =>
                         record.MutationId == plan.MutationId && record.AttemptedWrite)));
-                var engine = new ExpertTweakEngine(executor, journal, isElevated: false);
+                var engine = new ExpertTweakEngine(executor, journal, isElevated: false, new ScratchGuard());
                 var card = BuildTestCard("INTENT-001", [TestRegistryPlan("Intent", "7")]);
 
                 var applied = engine.Apply(card);
@@ -973,11 +1020,25 @@ internal static class Program
 
     private static Task TestExpertPolicyAsync()
     {
-        var unsafeCard = BuildTestCard("SECURITY-HVCI-001", [TestRegistryPlan("Unsafe", "0")]);
-        var excluded = ExpertTweakPolicy.Apply(unsafeCard);
-        AssertEqual(TweakDisposition.Excluded, excluded.Definition.Disposition, "HVCI disposition");
-        AssertEqual(0, excluded.Plan.Count, "excluded plans must be stripped");
-        Assert(!excluded.CanApply, "excluded card must never be applicable");
+        // The invariant is that a non-writable disposition never keeps a plan, whichever
+        // non-writable disposition the policy assigns. Asserting one specific classification
+        // would make the test a restatement of the policy rather than a check on it.
+        foreach (var id in (string[])
+                 ["SECURITY-HVCI-001", "CPU-PLACEMENT-001", "MMCSS-GAMES-001", "GPU-MSI-001", "GPU-HAGS-001"])
+        {
+            var gated = ExpertTweakPolicy.Apply(BuildTestCard(id, [TestRegistryPlan("Unsafe", "0")]));
+            Assert(!ExpertTweakPolicy.IsWritable(gated.Definition.Disposition),
+                $"{id} must not be writable");
+            AssertEqual(0, gated.Plan.Count, $"{id} plans must be stripped");
+            Assert(!gated.CanApply, $"{id} must never be applicable");
+            Assert(gated.Definition.DispositionReason.Length > 40, $"{id} must explain its disposition");
+        }
+
+        var acceleration = ExpertTweakPolicy.Apply(
+            BuildTestCard("INPUT-ACCEL-001", [TestRegistryPlan("Accel", "0")]));
+        AssertEqual(TweakDisposition.RecommendDefault, acceleration.Definition.Disposition,
+            "pointer acceleration should be a recommended default");
+        AssertEqual(1, acceleration.Plan.Count, "a recommended default must retain its plan");
 
         var powerCard = BuildTestCard("POWER-OVERLAY-001", [TestRegistryPlan("Power", "1")]);
         var experiment = ExpertTweakPolicy.Apply(powerCard);
@@ -1269,6 +1330,213 @@ internal static class Program
             Assert(card.Definition.Rationale.Length > 60,
                 $"{card.Definition.Id} must explain why it was excluded, not just assert it");
         }
+    }
+
+    private static Task TestMutationAllowlistAsync()
+    {
+        // Permitted: a key the catalogue actually writes.
+        Assert(
+            MutationAllowlist.FindViolation(
+                MutationKind.RegistryValue, @"HKCU\System\GameConfigStore", "GameDVR_Enabled") is null,
+            "a catalogue key must be permitted");
+
+        // Refused: anything else, including a run key and a traversal below a permitted prefix.
+        Assert(
+            MutationAllowlist.FindViolation(
+                MutationKind.RegistryValue,
+                @"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+                "Evil") is not null,
+            "an arbitrary key must be refused");
+
+        Assert(
+            MutationAllowlist.FindViolation(
+                MutationKind.RegistryValue,
+                @"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}\0001\Evil",
+                "*InterruptModeration") is not null,
+            "a key below the adapter instance must be refused");
+
+        Assert(
+            MutationAllowlist.FindViolation(
+                MutationKind.RegistryValue,
+                @"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}\0001",
+                "ImagePath") is not null,
+            "an unlisted value on a permitted adapter key must be refused");
+
+        // Process and boot targets are refused by kind regardless of what they name.
+        Assert(
+            MutationAllowlist.FindViolation(MutationKind.ProcessAffinity, "cs2", "ProcessorAffinity") is not null,
+            "process writes must be refused by kind");
+        Assert(
+            MutationAllowlist.FindViolation(MutationKind.BootConfigurationValue, "bcd", "x") is not null,
+            "boot configuration must be refused by kind");
+
+        // A power setting outside the processor subgroup is refused even with a bound scheme GUID.
+        Assert(
+            MutationAllowlist.FindViolation(
+                MutationKind.PowerSchemeValue,
+                "381b4222-f694-41f0-9685-ff5bb260df2e|00000000-0000-0000-0000-000000000000:abc",
+                "x") is not null,
+            "a non-processor power subgroup must be refused");
+
+        return Task.CompletedTask;
+    }
+
+    private static async Task TestAllowlistBlocksTamperedLedgerAsync()
+    {
+        await WithTemporaryDirectoryAsync(directory =>
+        {
+            var journal = new TweakJournalStore(directory);
+            var engine = new ExpertTweakEngine(new WindowsMutationExecutor(), journal, isElevated: false);
+
+            // A card naming a location outside the allowlist must never reach a write, even when
+            // it is handed straight to Apply rather than coming from the catalogue.
+            var rogue = BuildTestCard("ROGUE-001", [
+                new MutationPlan(
+                    "rogue.run",
+                    MutationKind.RegistryValue,
+                    @"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                    "Evil",
+                    "payload.exe",
+                    "String",
+                    "off-allowlist write")
+            ]);
+
+            AssertThrows<InvalidOperationException>(() => engine.Apply(rogue));
+
+            new WindowsMutationExecutor().Read(
+                new MutationPlan("check", MutationKind.RegistryValue,
+                    @"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "Evil", "", "String", "check"),
+                out var exists);
+            Assert(!exists, "an off-allowlist value must never be written");
+
+            // The same check must hold on the way back out, because a restore replays ledger data
+            // that a user can edit.
+            var tampered = new TweakTransaction(
+                Guid.NewGuid(), "ROGUE-001", "Rogue", DateTimeOffset.UtcNow, null, false,
+                [
+                    new MutationRecord(
+                        "rogue.run", MutationKind.RegistryValue,
+                        @"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "Evil", "String",
+                        "off-allowlist restore", true, "payload.exe", "x", "x", true, "applied")
+                ],
+                TweakTransaction.StateApplied, "applied");
+            journal.Upsert(tampered);
+
+            var reverted = engine.Revert(tampered.TransactionId, "test");
+            AssertEqual(TweakTransaction.StateRevertFailed, reverted.State,
+                "a tampered ledger entry must not be replayed");
+            Assert(
+                reverted.Mutations[0].Observation.Contains("allowlist", StringComparison.OrdinalIgnoreCase),
+                "the refusal must name the allowlist");
+            return Task.CompletedTask;
+        });
+    }
+
+    private static async Task TestPolicyLeavesWritableTweaksAsync()
+    {
+        var snapshot = await new WindowsEnvironmentScanner().ScanAsync();
+        var context = await new ExpertScanCoordinator().ScanAsync(
+            snapshot, measureInput: false, measureScheduler: false, measureNetwork: false, TimeSpan.Zero);
+        var cards = ExpertTweakCatalog.Evaluate(context, new WindowsMutationExecutor());
+
+        // The product has to be able to act. A policy that leaves nothing writable has turned the
+        // tool into an advice list, which is the failure mode this gate exists to prevent.
+        var writable = cards
+            .Where(card => ExpertTweakPolicy.IsWritable(card.Definition.Disposition) && card.Plan.Count > 0)
+            .ToArray();
+        Assert(writable.Length >= 6,
+            $"only {writable.Length} card(s) can be written; the catalogue can no longer act");
+
+        // And every writable target must be on the allowlist.
+        foreach (var card in writable)
+        {
+            foreach (var plan in card.Plan)
+            {
+                Assert(MutationAllowlist.FindViolation(plan) is null,
+                    $"{card.Definition.Id} plans a write to an off-allowlist target: {plan.Target}");
+            }
+        }
+
+        // Nothing excluded may carry a plan.
+        foreach (var card in cards.Where(entry => entry.Definition.Disposition == TweakDisposition.Excluded))
+        {
+            AssertEqual(0, card.Plan.Count, $"{card.Definition.Id} is excluded but still carries a plan");
+        }
+    }
+
+    private static CaptureAnalysis BuildAnalysis(
+        string name,
+        double median,
+        double p99,
+        double stdDev,
+        double meanFps,
+        long frames = 60_000)
+        => new(
+            DateTimeOffset.UtcNow, name, name.GetHashCode(StringComparison.Ordinal).ToString("x8"), 1024,
+            "test", "cs2.exe", "FrameTime", frames, frames, 0, ResultOutcome.BaselineOnly,
+            [
+                new MetricSummary("median_frame_ms", "Median frame time", median, "ms", "", "Available"),
+                new MetricSummary("p99_frame_ms", "P99 frame time", p99, "ms", "", "Available"),
+                new MetricSummary("frame_stddev", "Frame-time consistency", stdDev, "ms", "", "Available"),
+                new MetricSummary("mean_fps", "Mean frame rate", meanFps, "FPS", "", "Available")
+            ],
+            new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase),
+            []);
+
+    private static Task TestVerifierNoChangeAsync()
+    {
+        var before = BuildAnalysis("before.csv", 4.000, 6.000, 0.500, 250);
+        var after = BuildAnalysis("after.csv", 4.020, 6.020, 0.502, 249.5);
+
+        var result = TweakVerifier.Compare(before, after);
+        AssertEqual(VerificationVerdict.NoMeasuredChange, result.Verdict, "sub-noise movement verdict");
+        Assert(result.ShouldRevert, "a change that did nothing should be reverted");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestVerifierRegressionAsync()
+    {
+        // Mean frame rate improves while the tails get materially worse. A competitive verdict must
+        // follow the tails, not the average.
+        var before = BuildAnalysis("before.csv", 4.000, 6.000, 0.500, 250);
+        var after = BuildAnalysis("after.csv", 3.960, 7.500, 0.700, 253);
+
+        var result = TweakVerifier.Compare(before, after);
+        AssertEqual(VerificationVerdict.Regressed, result.Verdict, "tail regression verdict");
+        Assert(result.ShouldRevert, "a tail regression should be reverted");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestVerifierRefusesMismatchAsync()
+    {
+        var before = BuildAnalysis("before.csv", 4.0, 6.0, 0.5, 250, frames: 100);
+        var after = BuildAnalysis("after.csv", 3.5, 5.0, 0.4, 285, frames: 100);
+        AssertEqual(VerificationVerdict.NotComparable, TweakVerifier.Compare(before, after).Verdict,
+            "too few frames must be refused");
+
+        var identical = BuildAnalysis("same.csv", 4.0, 6.0, 0.5, 250);
+        AssertEqual(VerificationVerdict.NotComparable, TweakVerifier.Compare(identical, identical).Verdict,
+            "comparing a capture against itself must be refused");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Fails to capture one named mutation, leaving every other call untouched.</summary>
+    private sealed class FailingCaptureExecutor(IMutationExecutor inner, string failingMutationId) : IMutationExecutor
+    {
+        public string? Read(MutationPlan plan, out bool exists) => inner.Read(plan, out exists);
+
+        public MutationRecord Capture(MutationPlan plan)
+            => plan.MutationId == failingMutationId
+                ? throw new InvalidOperationException("The before-state could not be read.")
+                : inner.Capture(plan);
+
+        public MutationRecord Apply(MutationPlan plan) => inner.Apply(plan);
+
+        public MutationRecord Apply(MutationPlan plan, MutationRecord captured) => inner.Apply(plan, captured);
+
+        public MutationRecord Revert(MutationRecord record) => inner.Revert(record);
+
+        public bool RequiresElevation(MutationPlan plan) => inner.RequiresElevation(plan);
     }
 
     private sealed class CountingReader(ITweakStateReader inner) : ITweakStateReader

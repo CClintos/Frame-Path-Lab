@@ -2016,16 +2016,29 @@ public static class ExpertTweakCatalog
             "Fast startup",
             "Fast startup hibernates the kernel session rather than shutting it down, so powering on resumes the "
             + "previous kernel state and the driver state along with it.",
-            "A restart already performs a full kernel restart. There is insufficient evidence that disabling "
-            + "Fast startup improves steady-state CS2 performance on a healthy system.",
-            "Disabling it increases cold-start time and changes shutdown semantics.",
+            "This does not raise steady-state frame rate, and it is not offered as though it does. What it fixes "
+            + "is reproducibility: with fast startup on, a shutdown resumes the previous kernel and driver state, "
+            + "which is why a fault can survive a shutdown and vanish after a restart. A machine that is tuned "
+            + "and then measured has to start from the same state every session or none of the measurements "
+            + "compare.",
+            "Cold starts take longer. A restart already gives a clean kernel session, so the value here is that "
+            + "shutdown does too, without depending on the user remembering which one they used.",
             TweakRisk.Low,
             TweakScope.Machine,
-            EvidenceQuality.Weak,
+            EvidenceQuality.Moderate,
             true,
             false,
             false,
             []);
+
+        var plan = new MutationPlan(
+            "BOOT-FASTSTART-001.value",
+            MutationKind.RegistryValue,
+            @"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power",
+            "HiberbootEnabled",
+            "0",
+            "DWord",
+            "Disable fast startup so a shutdown ends the kernel session");
 
         if (context.FastStartupEnabled is null)
         {
@@ -2041,14 +2054,15 @@ public static class ExpertTweakCatalog
         return new ExpertTweakCard(
             definition,
             new TweakReading(
-                TweakState.Unknown,
+                enabled ? TweakState.Suboptimal : TweakState.Optimal,
                 enabled ? "Enabled" : "Disabled",
-                "No performance recommendation",
+                "Disabled, for reproducible sessions",
                 enabled
-                    ? "A shutdown will hibernate the kernel session rather than ending it."
+                    ? "A shutdown will hibernate the kernel session rather than ending it, so two sessions can "
+                      + "start from different driver state."
                     : "A shutdown ends the kernel session, so every boot starts clean."),
-            [],
-            "Diagnostic only; use Restart when a clean kernel session is required.");
+            enabled ? [plan] : [],
+            null);
     }
 
     private static ExpertTweakCard InterruptAffinityPolicy(ExpertScanContext context)

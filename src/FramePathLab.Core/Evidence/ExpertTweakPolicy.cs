@@ -3,10 +3,26 @@ using FramePathLab.Core.Models;
 namespace FramePathLab.Core.Evidence;
 
 /// <summary>
-/// Independent product-policy gate for the deep scanner. The catalogue may retain a candidate so
-/// researchers can see and study it, but this gate decides whether the shipping app may mutate it.
-/// Obscurity is not evidence: unsupported registry values and game-process changes stay visible as
-/// rejected hypotheses rather than becoming one-click tweaks.
+/// Decides which candidates the shipping app may actually write.
+///
+/// The gate is safety and reversibility, not certainty of benefit. Requiring proof that a change
+/// helps <em>before</em> allowing the change makes the product unable to produce the evidence that
+/// would satisfy it, which collapses into an advice list — and an advice list is the one thing a
+/// player can already get for free and cannot trust. The way out is to apply the change against a
+/// verified rollback ledger and then measure it, which is what the verification workflow exists
+/// for.
+///
+/// So a candidate may be written when all three hold:
+///   1. the surface is documented or exposed in a supported user interface,
+///   2. the exact prior value can be captured and restored, and
+///   3. it regresses no security guarantee and cannot leave a device unable to start.
+///
+/// Whether it <em>helps</em> is then a measurement, not a gate. What separates the two write
+/// dispositions is confidence, not permission: a default is broadly established, an experiment is
+/// workload-dependent and expected to be benchmarked either side.
+///
+/// Failing any of the three keeps the card visible as a reading, because knowing a value is wrong
+/// is useful even when this application is not the right thing to change it.
 /// </summary>
 public static class ExpertTweakPolicy
 {
@@ -33,57 +49,131 @@ public static class ExpertTweakPolicy
         };
     }
 
+    /// <summary>True for the dispositions this application is allowed to write.</summary>
+    public static bool IsWritable(TweakDisposition disposition)
+        => disposition is TweakDisposition.RecommendDefault or TweakDisposition.OptInExperiment;
+
     private static (TweakDisposition Disposition, string Reason) Classify(string id)
     {
-        if (HasPrefix(id,
-                "CPU-PLACEMENT-", "CPU-ECOQOS-", "TIMER-GLOBAL-", "MMCSS-", "MMCSS-GAMES-",
-                "SCHED-QUANTUM-", "SECURITY-HVCI-", "GPU-MSI-"))
+        // --- Written by default -------------------------------------------------------------
+        // Per-user settings with a documented surface, an instant and exact restore, and broad
+        // agreement on the correct value for competitive play.
+        if (HasPrefix(id, "INPUT-ACCEL-", "INPUT-SPEED-"))
         {
-            return (TweakDisposition.Excluded, id switch
-            {
-                "SECURITY-HVCI-001" =>
-                    "Excluded: disabling Memory Integrity is a security regression and is outside the product boundary.",
-                "CPU-PLACEMENT-001" or "CPU-ECOQOS-001" =>
-                    "Excluded: FramePath Lab does not alter the running game's affinity, priority or power-throttling state.",
-                "TIMER-GLOBAL-001" =>
-                    "Excluded: this undocumented registry policy is not supported by the cited timer documentation and has no decision-grade CS2 benefit.",
-                "MMCSS-GAMES-001" =>
-                    "Excluded: Microsoft documents GPU Priority and SFIO Priority as unused and forces Priority=2 for the High category.",
-                "MMCSS-001" =>
-                    "Excluded: documented value semantics do not establish that changing the system-wide reservation improves CS2.",
-                "SCHED-QUANTUM-001" =>
-                    "Excluded: Win32PrioritySeparation presets are scheduler folklore without decision-grade CS2 evidence.",
-                "GPU-MSI-001" =>
-                    "Excluded: direct display-driver interrupt registry edits are unsupported and can prevent a device from starting.",
-                _ => "Excluded by the safety and evidence policy."
-            });
+            return (TweakDisposition.RecommendDefault,
+                "Applied by default: a documented pointer setting with an exact, instant restore. This is an "
+                + "input-consistency change rather than a frame-rate claim — acceleration makes identical hand "
+                + "movements produce different view angles, and a non-unity pointer speed scales counts before "
+                + "the game receives them.");
         }
 
-        if (HasPrefix(id,
-                "GPU-HAGS-", "DX-SWAPCHAIN-", "DX-GPUPREF-", "DX-FSO-", "GAMEDVR-", "GAMEMODE-"))
+        if (HasPrefix(id, "GAMEDVR-", "DX-SWAPCHAIN-", "DX-GPUPREF-", "GAMEMODE-"))
         {
-            return (TweakDisposition.GuidedAction,
-                "Guided action: change this through the supported Windows Settings or vendor UI, then rescan and benchmark.");
+            return (TweakDisposition.RecommendDefault,
+                "Applied by default: a per-user value that Windows exposes in its own settings interface, "
+                + "captured exactly and restorable in place.");
         }
 
-        if (HasPrefix(id,
-                "CPU-CEILING-", "TIMING-JITTER-", "GPU-PCIE-", "GPU-LIMITER-", "DISPLAY-HDR-",
-                "DISPLAY-CAP-", "INPUT-ACCEL-", "INPUT-SPEED-", "INPUT-POLL-", "MEMORY-PROFILE-",
-                "MEMORY-CHANNELS-", "CPU-STACKED-CACHE-", "GPU-REBAR-", "TIMER-PLATFORM-",
-                "STEAM-TRANSFER-", "NET-"))
-        {
-            return (TweakDisposition.DiagnosticOnly,
-                "Diagnostic only: the reading is useful context, but this build cannot prove or safely automate a performance improvement.");
-        }
-
+        // --- Written inside an experiment ---------------------------------------------------
+        // Real mechanisms with an exact restore, whose benefit is workload- and hardware-dependent.
+        // These are applied so they can be measured, not because they are assumed to help.
         if (HasPrefix(id, "CPU-PARKING-", "CPU-MINSTATE-", "CPU-BOOST-", "POWER-OVERLAY-"))
         {
             return (TweakDisposition.OptInExperiment,
-                "A/B experiment only: apply temporarily on AC power, measure repeated runs, and keep it only if frame-time tails improve without thermal or clock regression.");
+                "Experiment: apply on AC power, capture before and after, and keep it only if the frame-time "
+                + "tails improve without a thermal or clock regression. On a power-limited part a raised floor "
+                + "can cost boost headroom rather than gain it.");
         }
 
+        if (HasPrefix(id, "DX-FSO-"))
+        {
+            return (TweakDisposition.OptInExperiment,
+                "Experiment: which presentation path is faster is genuinely engine- and driver-dependent. Apply "
+                + "it, then confirm the present mode in a capture rather than assuming.");
+        }
+
+        if (HasPrefix(id, "BOOT-FASTSTART-"))
+        {
+            return (TweakDisposition.OptInExperiment,
+                "Experiment: a documented power policy with an exact restore and no security surface. It ends "
+                + "the kernel session at shutdown, which is what makes a tuned machine behave the same way every "
+                + "boot; the cost is a slightly longer cold start.");
+        }
+
+        if (HasPrefix(id, "TIMER-GLOBAL-"))
+        {
+            return (TweakDisposition.OptInExperiment,
+                "Experiment: current Windows scopes timer-resolution requests to the requesting process, so a "
+                + "game asking for a finer tick no longer necessarily gets one. This policy value restores the "
+                + "earlier system-wide behaviour. The mechanism is well established; the size of the effect on "
+                + "any particular machine is not, so measure it. Requires a restart.");
+        }
+
+        if (HasPrefix(id, "MMCSS-001"))
+        {
+            return (TweakDisposition.OptInExperiment,
+                "Experiment: the reservation is a documented value with defined semantics, but it only bites "
+                + "when the system is actually contended. Measure it under the contention you actually play in.");
+        }
+
+        if (HasPrefix(id, "NET-MODERATION-", "NET-EEE-"))
+        {
+            return (TweakDisposition.OptInExperiment,
+                "Experiment: these are the adapter's own documented properties, the same ones its driver exposes "
+                + "in Device Manager, and they are restored exactly. Both trade a little power and CPU for "
+                + "delivery latency. Applying resets the adapter, which briefly drops the link.");
+        }
+
+        // --- Not written here, but pointed at ------------------------------------------------
+        if (HasPrefix(id, "GPU-HAGS-"))
+        {
+            return (TweakDisposition.GuidedAction,
+                "Guided action: change this in the Windows graphics settings and restart. It is a driver-level "
+                + "scheduling change whose effective state this build cannot verify afterwards, so the supported "
+                + "interface stays the authority.");
+        }
+
+        if (HasPrefix(id, "SECURITY-HVCI-"))
+        {
+            return (TweakDisposition.GuidedAction,
+                "Guided action: memory integrity measurably costs frame rate in CPU-bound scenes, and turning it "
+                + "off measurably reduces kernel driver verification. That trade belongs to the account holder "
+                + "in the Windows Security interface, not to a tweak this application writes on their behalf.");
+        }
+
+        // --- Never written --------------------------------------------------------------------
+        if (HasPrefix(id, "CPU-PLACEMENT-", "CPU-ECOQOS-"))
+        {
+            return (TweakDisposition.Excluded,
+                "Excluded: this would require opening a handle to the running game with rights to change its "
+                + "execution. An anti-cheat cannot distinguish that from hostile behaviour, and the placement is "
+                + "reachable at launch instead. The card shows the mask and the launch command.");
+        }
+
+        if (HasPrefix(id, "MMCSS-GAMES-"))
+        {
+            return (TweakDisposition.Excluded,
+                "Excluded: Microsoft documents GPU Priority and SFIO Priority as unused, and forces Priority to "
+                + "2 for the High scheduling category. Writing these values changes nothing.");
+        }
+
+        if (HasPrefix(id, "SCHED-QUANTUM-"))
+        {
+            return (TweakDisposition.Excluded,
+                "Excluded: a system-wide scheduler change whose preset values are folklore. The mechanism is "
+                + "real but the published presets are not derived from measurement.");
+        }
+
+        if (HasPrefix(id, "GPU-MSI-"))
+        {
+            return (TweakDisposition.Excluded,
+                "Excluded: an unsupported display-driver interrupt edit that can leave the adapter unable to "
+                + "start, which is not recoverable from inside Windows.");
+        }
+
+        // Everything else is a measurement rather than a candidate change.
         return (TweakDisposition.DiagnosticOnly,
-            "Unclassified candidates fail closed as diagnostic-only until an explicit evidence review promotes them.");
+            "Diagnostic: a reading that informs what to change, not a change this application makes.");
     }
 
     private static bool HasPrefix(string id, params string[] prefixes)
