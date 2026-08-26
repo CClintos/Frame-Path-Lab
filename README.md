@@ -1,83 +1,76 @@
 # FramePath Lab
 
-FramePath Lab is a Windows pre-game readiness application for inspecting a competitive-FPS system, showing which supported checks are ready, available, unknown, or unavailable, analyzing local frame-delivery captures, and running one explicit, bounded power-plan experiment with rollback safeguards. It avoids registry-tweak bundles, debloat scripts, game-process interaction, packet tools, input automation, and unsupported system changes.
+A Windows tuning tool for competitive FPS that measures your specific machine, applies changes against a verified rollback ledger, and then tells you from a capture whether they actually did anything.
 
-## Current build
+The last part is the point. Anyone can hand you a list of registry values. Nobody watching a video can tell you whether those values did anything on *your* hardware, so the honest answer to "did that help?" has always been a shrug — and a shrug is what a placebo spiral is built on.
 
-Implemented:
+---
 
-- WPF desktop application targeting .NET 10 on Windows x64.
-- Scan-first pre-game dashboard with separate Ready / already set, Change available, Check manually, and Unavailable counts.
-- Plain-language current state, recommended next step, evidence, risks, and a directly connected action for every displayed check.
-- Supported deep links to Windows Advanced display, Game Mode, and default graphics settings; manual changes are followed by an explicit rescan prompt.
-- 59/60 Hz TV-compatible reporting is treated as a manual verification case, never as an automatic optimization opportunity.
-- Read-only Windows display, refresh, power, Steam/CS2-build and selected optional-application scan.
-- A 15-minute, opt-in switch to an already-installed Windows High performance power plan using documented PowrProf APIs.
-- Durable before-state journal, exact read-back verification, monitored independent rollback guardian, compare-before-write restoration, and next-launch recovery.
-- Guided buttons for supported Windows settings and an in-game CS2/Reflex checklist; those settings remain user-controlled.
-- Evidence cards that separate facts, hypotheses, guided experiments and exclusions.
-- Bounded PresentMon-style CSV parser with SHA-256 provenance.
-- Frame-time mean, median, P95, P99, conditional P99.9, standard deviation, mean-FPS equivalent, explicit frame-budget share, CPU/GPU busy medians and present-mode counts.
-- Target-process protection: CS2 rows are selected explicitly; ambiguous multi-process imports fail closed.
-- Local derived-history store with atomic replacement and no raw-capture copy.
-- Collision-safe Markdown report export.
-- Headless research CLI and dependency-free automated test runner.
+## Why this is not another tweak list
 
-## Expert tier
+A typical optimizer script — and every guide it was copied from — has four structural problems. FramePath Lab exists because of them.
 
-A second, deeper layer for systems that already have the obvious settings right. It keeps detection separate from product policy: each item is labelled **default recommendation**, **A/B experiment**, **guided action**, **diagnostic only**, or **excluded**. Only supported, bounded power-policy candidates can retain an Apply plan.
+**It doesn't know anything about your machine.** It writes the same values everywhere. FramePath Lab reads CPU cache topology, exact display timing, memory configuration from firmware tables, GPU telemetry, audio format, and the live mouse report stream, then only offers what is actually wrong here. A value already correct is reported as settled, not written again.
 
-What it measures that the base scan cannot:
+**It can't undo itself.** The usual safety net is a System Restore Point — coarse, all-or-nothing, and frequently disabled by default. Every change here captures its exact prior value into a durable integrity-checked ledger *before* writing, reads back to confirm, and can be reversed individually. The ledger survives a crash, a reboot, and reinstalling the app.
 
-- **CPU scheduling topology** — physical/logical cores, SMT, efficiency classes, and last-level-cache groups. Detects an asymmetric-cache die (the vertical-cache CCD) and a hybrid performance-core set, then names the affinity mask a latency-sensitive game belongs on. Cores outside any L3 domain — the low-power island on recent hybrid parts — are grouped separately instead of being dropped.
-- **Exact display timing** via `QueryDisplayConfig` — the true rational refresh rate, not a truncated integer, so 59.94-class timings need no guessing. The frame cap is computed from it.
-- **GPU telemetry** through the driver's own NVML — active clock limiter, PCIe link width and generation against maximum, performance state. Loaded only from the protected Windows system directory; no bundled binary, and absence degrades to "unavailable".
-- **Hardware-accelerated GPU scheduling** remains a guided Windows Settings check. The reserved `D3DKMT_WDDM_2_7_CAPS` structure and a registry request are not treated as a supported effective-state API.
-- **Mouse message-arrival sampling** — a descriptive raw-input message-pump observation. It is not presented as the device's configured polling rate, a missed-report count, or a decision-grade 2-8 kHz measurement.
-- **Thread wake-up sampling** — a coarse managed `Thread.Sleep` observation. It is not labelled DPC/ISR latency; attribution requires WPR/ETW.
-- **Presentation path from the capture itself** — independent flip versus composed, vertical sync read from the sync interval rather than from game configuration, CPU- versus GPU-bound classification, frame-pacing cadence, and dropped presents.
-- **Memory configuration** parsed from SMBIOS — per-slot size and firmware-reported configured/maximum speed, with channel layout only when locator strings can be parsed. This is a consistency check, not proof of XMP/EXPO state or stability.
-- **Stacked-cache CPU profile** — a part carrying vertically stacked cache is power- and thermally-limited by design, so the catalogue changes its own advice there: it offers no affinity change (one cache domain leaves nothing to choose between) and demotes the processor performance floor from a recommendation to an explicit A/B, because a raised floor competes with the boost headroom the active cores need.
-- **Resizable BAR / BAR1 context** without claiming that aperture size proves the driver's per-game Resizable BAR profile is active.
-- **Performance-counter frequency** retained as provenance without claiming that QPC frequency proves a `useplatformclock` boot setting.
-- **Display adapter interrupt mode**, and **Steam transfer in progress**, which is among the most common causes of stutter in an otherwise clean session and is invisible to any settings audit.
-- **Audio-path context** — shared-mode format, endpoint-effects flags, channel count, and possible third-party audio services. These are diagnostic observations: the scan cannot prove the active default endpoint, CS2's source rate, spatial-sound state, or a latency benefit.
-- **Local network path stability** — round-trip time and variation to the default gateway. This can reveal a local Wi-Fi, cable, router, or contention problem; it does not measure the route to a CS2 server or hit registration.
-- **Panel identity from EDID** — native timing and vertical rate range, read from the panel's own description of itself. Windows only enumerates what the current link can carry, so a display running below native reports its reduced ceiling as though it were the panel's; EDID is the independent second opinion.
-- **NVIDIA driver-profile context**, read-only through the vendor interface and loaded from the protected Windows system directory. Values are observations rather than a universal competitive preset; Reflex, VRR, driver version, and bottleneck conditions must be benchmarked.
-- **Fast startup**, which hibernates the kernel session instead of ending it, and **interrupt affinity policy** on the display adapter, reported but never written.
+**It can't tell you if it worked.** This is the big one. Capture the same scenario either side of one recorded change and `expert-verify` gives you a measured delta — judged on the **frame-time tails, not the average**, because a change that lifts mean frame rate while widening P99 is worse in a match and reads as a win on every FPS counter.
 
-- **Multimedia network throttling.** While any process is registered with the multimedia scheduler, the network stack caps non-multimedia packet processing at a documented default of ten per millisecond — which is exactly the traffic an online game depends on. This sits on the same registry key as the CPU reservation and is the more clearly specified of the two.
-- **System-wide power throttling**, which reaches the same outcome as clearing the throttle on the game process without opening a handle to the game to do it.
-- **Receive segment coalescing**, peer-to-peer update sharing, background packaged-application activity, kernel paging, the machine-wide recording policy, desktop transparency, and the always-on diagnostics trace session.
-- **Boot timing options read directly** (`useplatformclock`, `useplatformtick`, `disabledynamictick`, `tscsyncpolicy`) rather than inferred from the performance-counter frequency. Needs elevation, and reports "not read" rather than "nothing set" when it cannot look — those mean opposite things.
-- **Speculative-execution mitigation state**, reported alongside memory integrity. Both are surfaced with the trade stated in both directions and neither is written.
+**It doesn't know what's fake.** Guides accumulate folklore and never prune it. Fourteen entries here are things that were checked and rejected, each with the reason recorded — because for someone whose ranking is their income, knowing what *not* to chase is worth as much as another setting.
 
-### Checked and excluded
+---
 
-The catalogue also ships entries for changes that are widely recommended and do not survive scrutiny — USB selective suspend for an actively-used mouse, disabling the page file, SysMain and memory compression, turning off simultaneous multithreading, debloat scripts, legacy launch options, and network stack registry packs. Each states why it was rejected.
+## What it measures
 
-For someone whose ranking is their income the failure mode is not a missing tweak; it is an endless spiral of applying changes that do nothing and attributing normal variance to them. Saying "this was checked and it does not help, here is why" is worth as much as another setting.
+Most of this is invisible to any settings audit.
 
-Roughly thirty research candidates span CPU/power policy, timing, GPU/presentation, display, input, background activity, and network context. Unsupported registry writes, security reductions, game-process manipulation, raw NIC/driver changes, MMCSS folklore, and timer myths remain visible as **Excluded** with no Apply plan. The retained power-policy experiments show their literal supported writes before approval.
+| | |
+|---|---|
+| **CPU scheduling topology** | Physical/logical cores, SMT, efficiency classes, and last-level-cache groups. Identifies an asymmetric-cache die and a hybrid performance-core set. Cores outside any L3 domain — the low-power island on recent hybrid parts — are grouped separately instead of being dropped |
+| **Exact display timing** | The true rational refresh rate via `QueryDisplayConfig`, not a truncated integer, so 59.94-class timings need no guessing. The frame cap is computed from it |
+| **Memory configuration** | Parsed straight from SMBIOS firmware tables: per-slot size, part number, configured speed against SMBIOS maximum, channel population. Catches a kit at its JEDEC fallback and modules in one channel |
+| **GPU telemetry** | Active clock limiter, PCIe link width and generation against maximum, performance state, BAR1 aperture — through the driver's own library, loaded from the protected system directory |
+| **Driver profile** | The per-game profile: performance-state policy, render queue depth, vertical sync, frame limiting, shader cache. The one settings surface no Windows API exposes |
+| **Mouse report delivery** | Sustained rate, interval scatter and missed reports, timed from raw input. **Frame capture cannot see this** — it happens before the engine samples input |
+| **Wake-up punctuality** | Thread lateness measured against the timer tick, which isolates scheduling delay from timer granularity |
+| **Audio render path** | Shared-mode format, endpoint effects, layered spatial processing. A shooter applies its own HRTF; a virtual-surround renderer applies a second, and two spatial models in series blur localisation rather than sharpening it |
+| **Hardware error history** | Machine-check and corrected errors over a rolling week. The only stability signal that covers idle |
+| **Presentation path** | From the capture itself: independent flip vs composed, vertical sync read from the sync interval rather than game config, CPU/GPU-bound classification, pacing cadence, dropped presents |
 
-### CPU & platform
+---
 
-A dedicated view for the firmware-level tuning this application deliberately does not write, plus the one stability measurement that is actually available.
+## How a change gets applied
 
-**Validating a voltage offset is where almost every guide goes wrong.** A curve offset lowers voltage at every point on the frequency ladder, but the margin it removes is not evenly spread. It bites at the top of the boost range — highest clock, lowest voltage for that clock — and at idle, where the processor makes constant brief boosts and low-power transitions. An all-core stress test can reach neither: loading every core drops boost clocks and raises the voltage supplied for them, so it exercises the safest part of the curve. A configuration can pass one for hours and still reboot sitting at the desktop.
+Four rules, and they hold for every write:
 
-The tab lays out the validation sequence in the order that actually covers those regions — single-core boost cycling first, then real idle uptime, and the all-core run last and least — and states for each step what it cannot catch.
+1. **Capture first.** The exact prior value goes into the ledger before anything is written. If a before-state can't be read, nothing is written at all — applying it would create a change that could never be undone.
+2. **Verify by read-back.** A write that doesn't verify is reported as unverified, never as success.
+3. **All or nothing.** A tweak with several values applies as a unit. If one fails, the ones that landed roll back automatically.
+4. **Compare before restoring.** If something else changed the value after FramePath Lab did, that newer state is preserved rather than clobbered.
 
-**Hardware error history** is the measurement that makes this tractable. The platform logs machine-check exceptions and corrected errors whether or not anything visible goes wrong, so counting them over real uptime is the only stability signal that covers idle. A clean log is not proof; a dirty one is proof of instability, and on a machine running an offset the offset is the first suspect.
+Every target is additionally checked against a **compiled-in allowlist**, immediately before each write *and each restore*. The ledger is user-writable data that a restore replays — without an independent check it would be a command channel rather than a record, and its integrity hash can't close that, since whoever can rewrite the file can recompute the hash. The allowlist is keyed by registry key *and* value name, because several keys the catalogue legitimately writes also hold values it must never touch.
 
-The firmware controls are described per-processor: which ones this part actually exposes, what each does, and — for a cache-stacked part — which are locked and will silently ignore anything entered.
+That check is what makes privileged writes safe to permit at all, instead of disabling them wholesale.
 
-### Verify — did the change actually do anything?
+---
 
-This is the part a settings guide cannot do. Anyone can list registry values; nobody watching a video can tell whether they did anything on *your* machine, so the honest answer to "did that help?" has always been a shrug. Capture the same scenario either side of one recorded change and the shrug becomes a number.
+## What gates a write
 
-The verdict follows the **tails**, not the average. A change that lifts mean frame rate while widening P99 is a change a competitive player should reject, and that case is common enough that judging by average frame rate is actively misleading. Movement smaller than run-to-run noise is reported as *no measured change* rather than as a win, and a single pair is never called proof — an improvement is reported as worth keeping and worth repeating.
+**Safety and reversibility — not certainty of benefit.** A candidate may be written when the surface is documented or UI-exposed, the exact prior value can be captured and restored, and it regresses no security guarantee and cannot leave a device unable to start.
+
+Requiring proof that a change helps *before* allowing the change would make the product unable to produce the evidence that would satisfy it. That collapses into an advice list — the one thing you can already get for free and can't trust. Whether it helps is answered afterwards, by measurement.
+
+Cards fall into five dispositions: **applied by default**, **applied as an experiment**, **guided** (change it in the supported UI), **diagnostic** (a reading, not a change), and **excluded** (with the reason recorded).
+
+### Never written
+
+Anything reaching into the running game, memory integrity, speculative-execution mitigations, display-driver interrupt edits, boot configuration, and the MMCSS task values Microsoft documents as unused.
+
+**Thread placement is the notable one.** Pinning the game means opening a handle to it with rights to change its execution. Nothing about that is cheating, but an anti-cheat can't distinguish intent from behaviour, and for a player whose account is their livelihood that asymmetry isn't worth a few percent. The card shows the preferred mask and the launch command that reaches the same placement without touching the process — alongside the reserved-processor-set reading, which moves everything *else* off those cores instead.
+
+---
+
+## Verify — did it actually do anything?
 
 ```powershell
 .\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert-apply-all
@@ -85,71 +78,54 @@ The verdict follows the **tails**, not the average. A change that lifts mean fra
 .\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert-verify <transaction-id> before.csv after.csv --revert-on-failure
 ```
 
-With `--revert-on-failure` a change that regressed or did nothing is undone automatically from the ledger. Pass `any` instead of a transaction id to compare two captures without attributing the difference to a recorded change.
+The verdict follows the tails. A real example — mean frame rate flat, and the change rejected:
 
-Headless equivalents:
-
-```powershell
-.\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert --measure-input
-.\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert-apply POWER-OVERLAY-001
-.\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert-revert all
+```
+Median frame time      4.009 →  3.986    -0.57%  noise
+P95 frame time         4.832 →  5.302    +9.73%  WORSE
+P99 frame time         5.140 →  5.856   +13.94%  WORSE
+Frame-time consistency 0.499 →  0.796   +59.38%  WORSE
+Mean frame rate      249.787 → 249.984   +0.08%  noise
+→ verdict: regressed
 ```
 
-Deliberately deferred:
+Every FPS counter calls that a wash. It's a 14% worse P99 — stutter you feel every round.
 
-- Direct PresentMon execution until an exact component/hash/argument/lost-event/licence contract passes.
-- Causal A/A or A/B decisions until scenario and statistical calibration pass.
-- Reflex/Anti-Lag/config state verification.
-- Automatic display, NVIDIA driver, Steam and CS2 setting changes.
-- Cloud analytics, accounts and background updates.
+Movement smaller than run-to-run noise reports as **no measured change** rather than a win, mismatched or too-short captures are refused outright, and a single pair is never called proof. `--revert-on-failure` undoes a change the measurement didn't justify. Pass `any` instead of a transaction id to compare two captures without attributing the difference to a recorded change.
 
-## Safety boundary
+---
 
-The expert tier writes system state. What gates a write is safety and reversibility, not certainty of benefit:
+## CPU & platform
 
-1. the surface is documented or exposed in a supported user interface,
-2. the exact prior value can be captured and restored, and
-3. it regresses no security guarantee and cannot leave a device unable to start.
+A dedicated view for the firmware-level tuning this app deliberately doesn't write.
 
-Requiring proof that a change helps *before* allowing the change would make the product unable to produce the evidence that would satisfy it — which collapses into an advice list, and an advice list is the one thing a player can already get for free and cannot trust. Whether a change helps is answered by measuring it afterwards, which is what **Verify** exists for.
+**Validating a voltage offset is where almost every guide goes wrong.** A curve offset lowers voltage at every point on the frequency ladder, but the margin it removes isn't evenly spread. It bites at maximum single-core boost — highest clock, lowest voltage for that clock — and at idle, where the processor makes constant brief boosts and low-power transitions.
 
-Every target is additionally checked against a compiled-in allowlist immediately before each write and each restore. This matters because the ledger is user-writable data that a restore replays: without an independent check it would be a command channel rather than a record, and its integrity hash cannot close that, since whoever can rewrite the file can recompute the hash. The allowlist is why privileged writes can be permitted at all instead of being disabled wholesale.
+An all-core stress test reaches neither. Loading every core drops boost clocks and raises the voltage supplied for them, so it exercises the *safest* part of the curve. A configuration can pass one for hours and still reboot sitting at the desktop.
 
-Still never written: anything reaching into the running game, memory integrity, display-driver interrupt edits, boot configuration, and the MMCSS task values Microsoft documents as unused.
+So the tab lays out the validation sequence in the order that covers those regions — single-core cycling first, real idle uptime second, the all-core run last and least — and states for every step what it structurally cannot catch.
 
-The contract for all of them is identical:
+**Hardware error history** is what makes this tractable. The platform logs machine checks whether or not anything visible goes wrong, so counting them over real uptime is the only stability signal covering idle. A clean log isn't proof; a dirty one is proof of instability, and on a machine running an offset, that offset is the first suspect.
 
-1. The exact prior value is read and recorded in a durable, integrity-checked ledger **before** anything is written. If a before-state cannot be read, nothing is written at all.
-2. A durable **write intent** is flushed immediately before each atomic write, and the verified result is flushed immediately after. A crash at either boundary therefore leaves a conservative recovery record.
-3. The write happens from the recorded capture with compare-before-write drift protection. A write that does not verify triggers automatic rollback and is never called success.
-4. A tweak with several values applies them as a unit. If one fails, the values that may have landed are rolled back automatically.
-5. Reverting compares before writing. If something else changed the value after FramePath Lab did, that newer state is preserved rather than overwritten.
+Firmware controls are described per-processor: which ones this part actually exposes, what each is for, and — on a cache-stacked part — which are locked and will silently ignore anything entered. It also flags that the idle power-state setting produces the same symptom as an over-aggressive curve; the two are constantly mistaken for each other.
 
-The ledger lives in `%LOCALAPPDATA%\FramePathLab` and supports recovery after a crash, reboot, or reinstall. It is a corruption check, not a security boundary against another process running as the same user. The full app must remain unelevated; a future privileged broker must resolve allowlisted action IDs rather than trust journal-supplied targets.
+---
 
-The full desktop/CLI process must not be used as an elevated mutation broker. Automatic expert writes are disabled while it is elevated, and machine-scope expert writes remain blocked until a restricted allowlisted broker exists.
+## Checked and excluded
 
-The application still does not:
+Fourteen entries, each with its reasoning recorded. A sample:
 
-- inject or load code into CS2;
-- read or write game memory;
-- intercept input or automate gameplay;
-- inspect or manipulate packets;
-- write driver, Steam or CS2 configuration files;
-- install a driver, service, overlay or background updater;
-- change firmware, power limits or boot configuration.
+- **USB selective suspend** — a mouse in use is never idle, so it's never suspended. One of the most-recommended tweaks on the internet; does nothing during a match.
+- **Nagle and TCP acknowledgement tuning** — real settings that do exactly what they claim, on a protocol competitive shooters don't use.
+- **Disabling graphics timeout detection** — converts a recoverable two-second stall into a machine that needs a power cycle.
+- **Disabling Secure Boot and TPM** — several anti-cheats require them. Being locked out of your league is categorically worse than any frame-time gain.
+- **All-core validation of a voltage offset** — structurally the wrong test, for the reason above.
+- **The flip queue registry value** — the real control is a driver profile setting this app already reads.
+- Plus page-file removal, SysMain and memory compression, disabling SMT, debloat scripts, legacy launch options, GPU preemption keys, input queue sizes, and RTC interrupt priority.
 
-**CPU affinity/EcoQoS**, **Memory Integrity disable**, **global timer policy**, **MMCSS task edits**, **Win32PrioritySeparation**, **GPU MSI registry edits**, and raw NIC/driver registry changes are explicitly excluded and have no executable plan.
+---
 
-CPU topology may be reported as context, but the app does not prescribe a launch-time affinity mask or modify a running game. Memory Integrity is reported only; disabling it is neither offered nor recommended.
-
-Imported captures are observational. A single capture cannot produce a causal Keep/Revert decision, and software timing fields are not presented as physical mouse-to-photon latency. Every tweak in the catalogue is an experiment with an uncertain benefit on any particular machine, not a guarantee.
-
-Normal app exit, explicit restore, AC loss, or the 15-minute limit triggers a restoration attempt followed by read-back verification. If another program selected a third plan, FramePath Lab preserves that newer state; if restoration fails, it surfaces the failure. The guardian handles a UI crash. Because the unsigned portable build installs no service or startup task, an OS crash/reboot can leave High performance active until FramePath Lab is opened again; startup recovery then compares the actual plan before writing.
-
-Normal first-run startup is observational. If the durable journal records an earlier approved but unfinished session, startup recovery may restore the exact recorded prior plan before scanning; it never substitutes an assumed default.
-
-## Build
+## Build and run
 
 The workspace-local .NET 10 SDK is used automatically when present:
 
@@ -157,31 +133,44 @@ The workspace-local .NET 10 SDK is used automatically when present:
 .\build.ps1
 ```
 
-Run the desktop app:
+Desktop app:
 
 ```powershell
 .\work\dotnet\dotnet.exe run --project .\src\FramePathLab.App\FramePathLab.App.csproj --configuration Release
 ```
 
-Run the CLI:
+CLI:
 
 ```powershell
-.\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- scan
+.\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert --measure-input
+.\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert-apply-all
+.\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert-revert all
 .\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- analyze .\samples\presentmon-sample.csv 4.1667
 ```
 
+Machine-scope changes need an elevated session. Every privileged write is still checked against the allowlist first.
+
 ## Local data
 
-Derived history and the separate power-session recovery journal are stored under `%LOCALAPPDATA%\FramePathLab`. Raw imported captures are not copied. Deleting derived history does not delete the recovery journal.
+The tweak ledger, derived history and the power-session recovery journal live under `%LOCALAPPDATA%\FramePathLab`. Raw imported captures are never copied. Deleting derived history does not delete the ledger — that would strand applied changes with no way back.
 
 ## Repository layout
 
-- `src/FramePathLab.Core` — models, evidence, analysis, reporting and persistence.
-- `src/FramePathLab.Windows` — Windows scanner, documented native API interop, transaction journal and rollback guardian.
+- `src/FramePathLab.Core` — models, catalogue, policy, allowlist, analysis, verification, persistence.
+- `src/FramePathLab.Windows` — scanners, documented native interop, the mutation executor.
 - `src/FramePathLab.App` — WPF desktop UI.
-- `tools/FramePathLab.Cli` — headless research CLI.
+- `tools/FramePathLab.Cli` — headless CLI.
 - `tests/FramePathLab.Tests` — dependency-free executable test suite.
 - `samples` — synthetic import fixture; not a performance reference.
 - `outputs` — research scope and build roadmap.
 
-The synthetic sample exists only to verify the import path. It is not CS2 performance evidence.
+The synthetic sample exists only to verify the import path. It is not performance evidence.
+
+## Honest limits
+
+- A single before/after pair is a measurement, not proof of causation. Repeat it.
+- The mouse probe times delivery to a user-mode process, so USB scheduling and driver batching are inside the number. It is not the device's electrical report rate.
+- Software timing fields from a capture are not mouse-to-photon latency. True click-to-photon needs hardware.
+- The network probe measures the first hop, not the route to any game server.
+- Firmware readings are reported as firmware states them; SMBIOS values are wrong on some boards, and the cards say so where that applies.
+- Every tweak is an experiment with an uncertain benefit on any particular machine. That is what the verification workflow is for.
