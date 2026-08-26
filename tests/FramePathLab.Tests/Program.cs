@@ -74,7 +74,9 @@ internal static class Program
         ("Paired schedule balances condition order against drift", TestAbScheduleBalancesDriftAsync),
         ("Paired test cancels a linear drift confound", TestAbCancelsDriftAsync),
         ("Paired test refuses to conclude from too few pairs", TestAbSmallSampleAsync),
-        ("Paired test reports a real effect as conclusive", TestAbDetectsRealEffectAsync)
+        ("Paired test reports a real effect as conclusive", TestAbDetectsRealEffectAsync),
+        ("Service allowlist admits only curated services and the start value", TestServiceAllowlistAsync),
+        ("Service cards refuse a service with live dependents", TestServiceDependencyGateAsync)
     ];
 
     public static async Task<int> Main()
@@ -1820,6 +1822,79 @@ internal static class Program
         Assert(result.IsImprovement, "a lower P99 must read as an improvement");
         Assert(result.ConfidenceHighPercent < 0, "the whole interval should sit below zero");
         return Task.CompletedTask;
+    }
+
+    private static Task TestServiceAllowlistAsync()
+    {
+        const string root = @"HKLM\SYSTEM\CurrentControlSet\Services\";
+
+        // A curated service's start value is permitted.
+        Assert(MutationAllowlist.FindViolation(MutationKind.RegistryValue, root + "Fax", "Start") is null,
+            "a curated service start value must be permitted");
+
+        // Nothing else about that service is.
+        Assert(MutationAllowlist.FindViolation(MutationKind.RegistryValue, root + "Fax", "ImagePath") is not null,
+            "only the start value may be written on a service");
+
+        // A service that is not on the curated list is refused, even though the prefix matches.
+        Assert(MutationAllowlist.FindViolation(MutationKind.RegistryValue, root + "SomeOtherService", "Start") is not null,
+            "an uncurated service must be refused");
+
+        // The never-offered list is enforced independently of the candidate list.
+        foreach (var protectedService in (string[])["EventLog", "RpcSs", "WinDefend", "BFE", "Dhcp"])
+        {
+            Assert(
+                MutationAllowlist.FindViolation(MutationKind.RegistryValue, root + protectedService, "Start") is not null,
+                $"{protectedService} must never be writable");
+        }
+
+        // A nested key beneath a service must not inherit the permission.
+        Assert(
+            MutationAllowlist.FindViolation(MutationKind.RegistryValue, root + @"Fax\Parameters", "Start") is not null,
+            "a nested key under a service must be refused");
+
+        return Task.CompletedTask;
+    }
+
+    private static async Task TestServiceDependencyGateAsync()
+    {
+        var snapshot = await new WindowsEnvironmentScanner().ScanAsync();
+        var context = await new ExpertScanCoordinator().ScanAsync(
+            snapshot, measureInput: false, measureScheduler: false, measureNetwork: false, TimeSpan.Zero);
+        var cards = ExpertTweakCatalog.Evaluate(context, new WindowsMutationExecutor());
+        var services = cards.Where(card => card.Definition.Id.StartsWith("SERVICE-", StringComparison.Ordinal))
+            .ToArray();
+
+        if (!context.Services.Available || services.Length == 0)
+        {
+            return;
+        }
+
+        foreach (var card in services)
+        {
+            var name = card.Definition.Id["SERVICE-".Length..];
+
+            // The invariant that keeps this safe: anything with a live dependent must carry no
+            // plan, whatever else the card says about it.
+            var dependents = context.Services.LiveDependentsOf(name);
+            if (dependents.Count > 0)
+            {
+                AssertEqual(0, card.Plan.Count,
+                    $"{name} has {dependents.Count} live dependent(s) and must not offer a write");
+                Assert(!card.CanApply, $"{name} must not be applicable while something depends on it");
+            }
+
+            // And every offered write must be the start value on that exact service.
+            foreach (var plan in card.Plan)
+            {
+                AssertEqual("Start", plan.ValueName, $"{name} must only write the start value");
+                Assert(MutationAllowlist.FindViolation(plan) is null,
+                    $"{name} plans a write the allowlist refuses");
+            }
+
+            Assert(card.Definition.Tradeoff.Contains("You lose", StringComparison.Ordinal),
+                $"{name} must state what stops working");
+        }
     }
 
     private sealed class CountingReader(ITweakStateReader inner) : ITweakStateReader

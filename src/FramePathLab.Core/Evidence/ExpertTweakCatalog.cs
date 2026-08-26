@@ -143,6 +143,7 @@ public static class ExpertTweakCatalog
         };
 
         cards.AddRange(NvidiaProfileCards(context));
+        cards.AddRange(ServiceCards(context));
         cards.AddRange(DebunkRegister());
 
         cards.AddRange(NetworkTweaks(context, reader));
@@ -2824,6 +2825,112 @@ public static class ExpertTweakCatalog
             new TweakReading(state, errors.Observation, "No logged hardware errors", detail),
             [],
             null);
+    }
+
+    // ---- Services ----------------------------------------------------------------------------
+
+    /// <summary>
+    /// One card per service that is present on this machine and safe to offer.
+    ///
+    /// Three gates before anything is offered. The service has to exist — many are absent on a
+    /// given edition. It must not already be disabled. And nothing still live may depend on it,
+    /// which is checked against the inverted dependency graph rather than assumed from a list,
+    /// because what depends on what varies by edition and by what is installed.
+    /// </summary>
+    private static IEnumerable<ExpertTweakCard> ServiceCards(ExpertScanContext context)
+    {
+        var inventory = context.Services;
+        if (!inventory.Available)
+        {
+            yield break;
+        }
+
+        foreach (var candidate in ServiceCatalog.Candidates)
+        {
+            if (ServiceCatalog.NeverOffered.Contains(candidate.ServiceName, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!inventory.Services.TryGetValue(candidate.ServiceName, out var state))
+            {
+                continue;
+            }
+
+            var definition = new ExpertTweakDefinition(
+                $"SERVICE-{candidate.ServiceName}",
+                "Services",
+                $"{candidate.DisplayName}",
+                candidate.WhatItDoes,
+                "A service that starts automatically costs background wakeups, memory and — for the "
+                + "few that touch storage — disk activity that can land inside a frame. Most of these "
+                + "will measure as doing nothing, which is a legitimate result and the reason each is "
+                + "offered separately rather than as a bundle.",
+                $"You lose: {candidate.WhatYouLose}",
+                candidate.Loss switch
+                {
+                    ServiceLoss.None => TweakRisk.Low,
+                    ServiceLoss.Convenience => TweakRisk.Moderate,
+                    ServiceLoss.Diagnostics => TweakRisk.Moderate,
+                    _ => TweakRisk.High
+                },
+                TweakScope.Machine,
+                EvidenceQuality.Weak,
+                true,
+                true,
+                false,
+                []);
+
+            var plan = new MutationPlan(
+                $"SERVICE-{candidate.ServiceName}.start",
+                MutationKind.RegistryValue,
+                $@"HKLM\SYSTEM\CurrentControlSet\Services\{candidate.ServiceName}",
+                "Start",
+                "4",
+                "DWord",
+                $"Disable the {candidate.DisplayName} service");
+
+            if (state.IsDisabled)
+            {
+                yield return new ExpertTweakCard(
+                    definition,
+                    new TweakReading(TweakState.Optimal, "Disabled", "Disabled",
+                        "Already disabled on this machine."),
+                    [],
+                    null);
+                continue;
+            }
+
+            // The one way this genuinely breaks a machine: switching off something another live
+            // service requires. Refused rather than warned about.
+            var dependents = inventory.LiveDependentsOf(candidate.ServiceName);
+            if (dependents.Count > 0)
+            {
+                yield return new ExpertTweakCard(
+                    definition,
+                    new TweakReading(
+                        TweakState.Blocked,
+                        $"{state.StartTypeName}, required by {dependents.Count} live service(s)",
+                        "Disabled",
+                        $"Refused: {string.Join(", ", dependents.Take(4))}"
+                        + (dependents.Count > 4 ? $" and {dependents.Count - 4} more" : string.Empty)
+                        + " still depend on this. Disabling it would break them."),
+                    [],
+                    "Another live service depends on this one.");
+                continue;
+            }
+
+            yield return new ExpertTweakCard(
+                definition,
+                new TweakReading(
+                    TweakState.Suboptimal,
+                    state.StartTypeName,
+                    "Disabled",
+                    $"{candidate.OnlyIf} Nothing currently running depends on it. "
+                    + "The prior start type is recorded, so this is reversible in place."),
+                [plan],
+                null);
+        }
     }
 
     // ---- Excluded, with the reason stated ----------------------------------------------------

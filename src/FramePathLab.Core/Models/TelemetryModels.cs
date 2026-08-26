@@ -315,3 +315,59 @@ public sealed record NetworkAdapterState(
     int? FlowControl,
     int? ReceiveCoalescing,
     string Observation);
+
+/// <summary>One service's start configuration as the control manager records it.</summary>
+public sealed record ServiceState(string Name, string DisplayName, int StartType, int ServiceType)
+{
+    public bool IsDisabled => StartType == 4;
+
+    public bool StartsAutomatically => StartType is 0 or 1 or 2;
+
+    public string StartTypeName => StartType switch
+    {
+        0 => "Boot",
+        1 => "System",
+        2 => "Automatic",
+        3 => "Manual",
+        4 => "Disabled",
+        _ => $"Unknown ({StartType})"
+    };
+}
+
+/// <summary>
+/// Every service plus the inverted dependency graph.
+///
+/// Windows records dependencies one way — each service lists what it needs — so answering "what
+/// breaks if this stops" requires walking the whole set and inverting it. That inversion is the
+/// safety mechanism: without it, disabling a service that something else quietly requires looks
+/// exactly like disabling one that nothing needs.
+/// </summary>
+public sealed record ServiceInventory(
+    bool Available,
+    IReadOnlyDictionary<string, ServiceState> Services,
+    IReadOnlyDictionary<string, IReadOnlyList<string>> Dependents,
+    string Observation)
+{
+    public static ServiceInventory Unavailable(string reason)
+        => new(false,
+            new Dictionary<string, ServiceState>(StringComparer.OrdinalIgnoreCase),
+            new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase),
+            reason);
+
+    /// <summary>
+    /// Services that would lose a dependency, counting only those not already disabled — a
+    /// dependent that is itself switched off cannot be broken by this.
+    /// </summary>
+    public IReadOnlyList<string> LiveDependentsOf(string serviceName)
+    {
+        if (!Dependents.TryGetValue(serviceName, out var names))
+        {
+            return [];
+        }
+
+        return names
+            .Where(name => !Services.TryGetValue(name, out var state) || !state.IsDisabled)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+}

@@ -176,10 +176,27 @@ Firmware controls are described per-processor: which ones this part actually exp
 
 ---
 
+## Services
+
+Around 35 Windows services, offered one at a time, each stating exactly what stops working — "printing stops entirely", "other machines can no longer reach shares hosted here", "biometric sign-in stops".
+
+Three gates before anything is offered:
+
+1. **It exists** on this edition. Many do not.
+2. **Nothing live depends on it** — checked against the dependency graph inverted from the live system, not from a hardcoded list. Windows records dependencies one way, so answering "what breaks if this stops" means walking the whole set and inverting it.
+3. **It is not load-bearing.** A never-offered list covers the remote procedure call layer, plug and play, the event log, audio, cryptography, networking core, the firewall filtering engine and the security services. Those are refused at the allowlist, not merely omitted from the catalogue.
+
+The dependency gate is not theoretical. On the machine this was built against it refused four candidates that appear on essentially every debloat list — including **Windows Search**, which had two live dependents.
+
+Only the start type is ever written, only on a curated service, and the prior value goes in the ledger like any other change. A nested key beneath a service is refused.
+
+**On what this is worth:** mostly not frame rate. Services cost background wakeups, memory and — for the few that touch storage — disk activity that can land inside a frame. Content indexing and the prefetcher are the two most likely to show up. Several will measure as doing nothing, which is a fine result and precisely why each is separate and why `abtest` exists. Do not take the list on faith.
+
 ## Checked and excluded
 
 Fourteen entries, each with its reasoning recorded. A sample:
 
+- **Debloat scripts** — the objection is the bundling, not the idea. Forty changes at once means nothing is attributable, nothing is individually reversible, and several entries are load-bearing for something the author never considered. Individual services are offered separately; see below.
 - **USB selective suspend** — a mouse in use is never idle, so it's never suspended. One of the most-recommended tweaks on the internet; does nothing during a match.
 - **Nagle and TCP acknowledgement tuning** — real settings that do exactly what they claim, on a protocol competitive shooters don't use.
 - **Disabling graphics timeout detection** — converts a recoverable two-second stall into a machine that needs a power cycle.

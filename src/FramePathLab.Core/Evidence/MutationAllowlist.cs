@@ -105,6 +105,14 @@ public static class MutationAllowlist
         "*RscIPv6"
     ];
 
+    /// <summary>
+    /// Service start types are reachable only for the curated candidates, and only the start value
+    /// itself. The services root holds every driver and service on the machine, so permitting the
+    /// prefix wholesale would hand a tampered ledger the ability to disable anything — including
+    /// the security services this catalogue explicitly refuses to touch.
+    /// </summary>
+    private const string ServicesPrefix = @"HKLM\SYSTEM\CurrentControlSet\Services\";
+
     private static readonly string[] PermittedSystemParameters =
     [
         "pointer.acceleration",
@@ -163,6 +171,32 @@ public static class MutationAllowlist
                    || values.Contains(valueName, StringComparer.OrdinalIgnoreCase)
                 ? null
                 : $"'{valueName}' is not a permitted value under '{target}'.";
+        }
+
+        if (target.StartsWith(ServicesPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var serviceName = target[ServicesPrefix.Length..];
+
+            // A nested key under a service must never match; only the service key itself.
+            if (serviceName.Contains('\\'))
+            {
+                return $"'{target}' is not a permitted service key.";
+            }
+
+            if (!string.Equals(valueName, "Start", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"Only the start type may be written on a service; '{valueName}' may not.";
+            }
+
+            if (ServiceCatalog.NeverOffered.Contains(serviceName, StringComparer.OrdinalIgnoreCase))
+            {
+                return $"'{serviceName}' is on the never-offered list and may not be changed.";
+            }
+
+            return ServiceCatalog.Candidates.Any(candidate =>
+                candidate.ServiceName.Equals(serviceName, StringComparison.OrdinalIgnoreCase))
+                ? null
+                : $"'{serviceName}' is not a service this application offers to change.";
         }
 
         if (target.StartsWith(NetworkClassPrefix, StringComparison.OrdinalIgnoreCase))

@@ -216,6 +216,7 @@ public sealed record ExpertScanContext(
     CpuTuningState CpuTuning,
     ulong? ReservedCpuSetMask,
     string ReservedCpuSetObservation,
+    ServiceInventory Services,
     int UsbControllers,
     int ModeratedUsbControllers,
     string UsbModerationObservation);

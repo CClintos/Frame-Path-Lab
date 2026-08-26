@@ -116,6 +116,15 @@ public static class ExpertTweakPolicy
                 + "Whether Windows was throttling anything that mattered is a measurement.");
         }
 
+        if (HasPrefix(id, "SERVICE-"))
+        {
+            return (TweakDisposition.OptInExperiment,
+                "Experiment: the start type is captured exactly and restored in place, and nothing live "
+                + "depends on the service or it would not be offered. What it is worth is a different "
+                + "question — most services cost background wakeups rather than frame time, and several "
+                + "will measure as doing nothing. Read what the card says you lose, then measure it.");
+        }
+
         if (HasPrefix(id, "MEMORY-KERNEL-"))
         {
             return (TweakDisposition.OptInExperiment,
