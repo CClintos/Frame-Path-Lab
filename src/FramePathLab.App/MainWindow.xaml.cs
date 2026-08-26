@@ -9,6 +9,7 @@ using FramePathLab.Core.Evidence;
 using FramePathLab.Core.Persistence;
 using FramePathLab.Core.Reporting;
 using FramePathLab.Core.Services;
+using FramePathLab.Windows.Mutation;
 using FramePathLab.Windows.Power;
 using FramePathLab.Windows.Scanning;
 using Microsoft.Win32;
@@ -33,18 +34,82 @@ public partial class MainWindow : Window
             new WindowsPowerSchemeController(),
             powerJournal,
             new ProcessPowerSessionGuardian(guardianExecutable, powerJournal));
+        var expertEngine = new ExpertTweakEngine(
+            new WindowsMutationExecutor(),
+            new TweakJournalStore(dataDirectory),
+            IsProcessElevated());
         _viewModel = new MainViewModel(
             new ScanCoordinator(new WindowsEnvironmentScanner(), new DefaultEvidenceCatalog()),
             new PresentMonCsvAnalyzer(),
             new JsonHistoryStore(dataDirectory),
             new MarkdownReportWriter(),
             powerCoordinator,
+            expertEngine,
+            new ExpertScanCoordinator(),
             dataDirectory);
         DataContext = _viewModel;
         Loaded += MainWindow_Loaded;
         Closing += MainWindow_Closing;
         _powerSessionTimer = new DispatcherTimer(TimeSpan.FromSeconds(5), DispatcherPriority.Background, PowerSessionTimer_Tick, Dispatcher);
         _powerSessionTimer.Start();
+    }
+
+    private static bool IsProcessElevated()
+    {
+        using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+        return new System.Security.Principal.WindowsPrincipal(identity)
+            .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+    }
+
+    private async void ApplyExpertTweak_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: ExpertTweakDisplay display })
+        {
+            return;
+        }
+
+        if (!display.CanApply)
+        {
+            MessageBox.Show(
+                this,
+                display.HasBlockedReason ? display.BlockedReason : "This item has no change to apply.",
+                display.Title,
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        // An expert audience is shown the literal writes before committing, not a summary of them.
+        var newline = Environment.NewLine;
+        var confirmation = MessageBox.Show(
+            this,
+            string.Join(
+                newline + newline,
+                display.Title,
+                display.Rationale,
+                "TRADE-OFF" + newline + display.Tradeoff,
+                "EXACT CHANGES" + newline + display.PlanText,
+                display.Requirements + ".",
+                "The exact current value is recorded first and can be restored from Applied changes."),
+            $"Apply {display.Id}?",
+            MessageBoxButton.OKCancel,
+            display.Card.Definition.Risk == FramePathLab.Core.Models.TweakRisk.SecurityTradeOff
+                ? MessageBoxImage.Warning
+                : MessageBoxImage.Question);
+        if (confirmation != MessageBoxResult.OK)
+        {
+            return;
+        }
+
+        await _viewModel.ApplyExpertTweakAsync(display);
+    }
+
+    private async void RevertExpertTweak_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: ExpertTransactionDisplay transaction })
+        {
+            await _viewModel.RevertExpertTransactionAsync(transaction.TransactionId);
+        }
     }
 
     private async void StartPowerSession_Click(object sender, RoutedEventArgs e)

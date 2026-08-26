@@ -77,6 +77,10 @@ public sealed class PresentMonCsvAnalyzer : ICaptureAnalyzer
         var gpuBusyIndex = FindIndex(headerMap, "GPUBusy", "MsGPUBusy", "GPUTime");
         var presentModeIndex = FindIndex(headerMap, "PresentMode");
         var allowsTearingIndex = FindIndex(headerMap, "AllowsTearing");
+        var syncIntervalIndex = FindIndex(headerMap, "SyncInterval");
+        var droppedIndex = FindIndex(headerMap, "Dropped", "AllowsTearingDropped");
+        var untilDisplayedIndex = FindIndex(headerMap, "MsUntilDisplayed", "UntilDisplayed");
+        var renderPresentIndex = FindIndex(headerMap, "MsRenderPresentLatency", "RenderPresentLatency");
 
         var all = new CaptureAccumulator();
         var cs2 = new CaptureAccumulator();
@@ -129,10 +133,15 @@ public sealed class PresentMonCsvAnalyzer : ICaptureAnalyzer
             var gpuBusy = ReadOptionalDouble(cells, gpuBusyIndex);
             var presentMode = ReadOptionalText(cells, presentModeIndex);
             var allowsTearing = ReadOptionalBoolean(cells, allowsTearingIndex);
-            all.Add(frameTime, cpuBusy, gpuBusy, presentMode, allowsTearing);
+            var delivery = new DeliverySample(
+                ReadOptionalDouble(cells, syncIntervalIndex),
+                ReadOptionalBoolean(cells, droppedIndex),
+                ReadOptionalDouble(cells, untilDisplayedIndex),
+                ReadOptionalDouble(cells, renderPresentIndex));
+            all.Add(frameTime, cpuBusy, gpuBusy, presentMode, allowsTearing, delivery);
             if (IsCs2(application))
             {
-                cs2.Add(frameTime, cpuBusy, gpuBusy, presentMode, allowsTearing);
+                cs2.Add(frameTime, cpuBusy, gpuBusy, presentMode, allowsTearing, delivery);
             }
         }
 
@@ -194,7 +203,16 @@ public sealed class PresentMonCsvAnalyzer : ICaptureAnalyzer
             ResultOutcome.BaselineOnly,
             metrics,
             new Dictionary<string, long>(selected.PresentModes, StringComparer.OrdinalIgnoreCase),
-            warnings);
+            warnings,
+            FrameDeliveryAnalyzer.Analyze(
+                selected.PresentModes,
+                selected.FrameTimes,
+                selected.CpuBusy,
+                selected.GpuBusy,
+                selected.SyncIntervals,
+                selected.UntilDisplayed,
+                selected.RenderPresentLatency,
+                selected.DroppedPresents));
     }
 
     private static IReadOnlyList<MetricSummary> BuildMetrics(
@@ -369,6 +387,13 @@ public sealed class PresentMonCsvAnalyzer : ICaptureAnalyzer
         return Convert.ToHexStringLower(hash);
     }
 
+    /// <summary>Optional per-row delivery fields, absent in older collector schemas.</summary>
+    private readonly record struct DeliverySample(
+        double? SyncInterval,
+        bool? Dropped,
+        double? UntilDisplayed,
+        double? RenderPresentLatency);
+
     private sealed class CaptureAccumulator
     {
         public List<double> FrameTimes { get; } = [];
@@ -383,14 +408,43 @@ public sealed class PresentMonCsvAnalyzer : ICaptureAnalyzer
 
         public long AllowsTearingTrue { get; private set; }
 
+        public List<double> SyncIntervals { get; } = [];
+
+        public List<double> UntilDisplayed { get; } = [];
+
+        public List<double> RenderPresentLatency { get; } = [];
+
+        public long DroppedPresents { get; private set; }
+
         public void Add(
             double frameTime,
             double? cpuBusy,
             double? gpuBusy,
             string presentMode,
-            bool? allowsTearing)
+            bool? allowsTearing,
+            DeliverySample delivery)
         {
             FrameTimes.Add(frameTime);
+            if (delivery.SyncInterval.HasValue)
+            {
+                SyncIntervals.Add(delivery.SyncInterval.Value);
+            }
+
+            if (delivery.UntilDisplayed is > 0)
+            {
+                UntilDisplayed.Add(delivery.UntilDisplayed.Value);
+            }
+
+            if (delivery.RenderPresentLatency is > 0)
+            {
+                RenderPresentLatency.Add(delivery.RenderPresentLatency.Value);
+            }
+
+            if (delivery.Dropped == true)
+            {
+                DroppedPresents++;
+            }
+
             if (cpuBusy.HasValue)
             {
                 CpuBusy.Add(cpuBusy.Value);

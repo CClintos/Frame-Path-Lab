@@ -22,7 +22,28 @@ public sealed record CaptureAnalysis(
     ResultOutcome Outcome,
     IReadOnlyList<MetricSummary> Metrics,
     IReadOnlyDictionary<string, long> PresentModeCounts,
-    IReadOnlyList<string> Warnings);
+    IReadOnlyList<string> Warnings,
+    IReadOnlyList<FrameDeliveryFinding>? DeliveryFindings = null);
+
+/// <summary>How severely a delivery finding bears on competitive latency.</summary>
+public enum DeliverySeverity
+{
+    Good,
+    Advisory,
+    Costly
+}
+
+/// <summary>
+/// A conclusion drawn from the capture itself rather than from a settings read. These are the only
+/// statements in the product that can say what the presentation path actually did.
+/// </summary>
+public sealed record FrameDeliveryFinding(
+    string Id,
+    string Title,
+    DeliverySeverity Severity,
+    string Observed,
+    string Meaning,
+    string NextStep);
 
 public sealed record CaptureAnalysisOptions(
     double? FrameBudgetMs = null,

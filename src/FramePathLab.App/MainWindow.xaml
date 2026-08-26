@@ -290,6 +290,204 @@
                 </ScrollViewer>
             </TabItem>
 
+            <TabItem Header="Expert">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="4,18,4,4">
+                    <StackPanel MaxWidth="1180" HorizontalAlignment="Stretch">
+
+                        <Border Style="{StaticResource CardBorder}" Background="#10263A" BorderBrush="#326586">
+                            <StackPanel>
+                                <TextBlock Text="EXPERT TIER" Style="{StaticResource EyebrowText}" />
+                                <TextBlock Text="{Binding ExpertSummary}"
+                                           FontSize="16"
+                                           FontWeight="SemiBold"
+                                           TextWrapping="Wrap"
+                                           Margin="0,4,0,0" />
+                                <TextBlock Text="{Binding ExpertHardware}"
+                                           Style="{StaticResource MutedText}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,6,0,0" />
+                                <TextBlock TextWrapping="Wrap"
+                                           Style="{StaticResource MutedText}"
+                                           Margin="0,10,0,0"
+                                           Text="Every change records its exact prior value before writing and verifies the result by reading it back. Anything applied here can be restored from Applied changes below." />
+                                <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                                    <Button Content="{Binding ExpertScanButtonText}"
+                                            Command="{Binding ExpertScanCommand}"
+                                            MinWidth="170" />
+                                    <CheckBox Content="Measure mouse report rate (5s, keep moving the mouse)"
+                                              IsChecked="{Binding MeasureInput}"
+                                              VerticalAlignment="Center"
+                                              Foreground="{StaticResource MutedBrush}"
+                                              Margin="14,0,0,0" />
+                                    <Button Content="Revert all"
+                                            Command="{Binding RevertAllExpertCommand}"
+                                            Style="{StaticResource DangerButton}"
+                                            MinWidth="120"
+                                            Margin="14,0,0,0" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <ItemsControl ItemsSource="{Binding ExpertTweaks}" Margin="0,4,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Style="{StaticResource CardBorder}">
+                                        <StackPanel>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Category}" Style="{StaticResource EyebrowText}" />
+                                                    <TextBlock Text="{Binding Title}"
+                                                               FontSize="16"
+                                                               FontWeight="SemiBold"
+                                                               TextWrapping="Wrap"
+                                                               Margin="0,2,0,0" />
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1" HorizontalAlignment="Right">
+                                                    <Border Background="{Binding StateBackground}"
+                                                            CornerRadius="10"
+                                                            Padding="10,4">
+                                                        <TextBlock Text="{Binding StateLabel}"
+                                                                   Foreground="{Binding StateForeground}"
+                                                                   FontSize="11"
+                                                                   FontWeight="SemiBold" />
+                                                    </Border>
+                                                    <TextBlock Text="{Binding RiskLabel}"
+                                                               Foreground="{Binding RiskForeground}"
+                                                               FontSize="10"
+                                                               FontWeight="SemiBold"
+                                                               HorizontalAlignment="Right"
+                                                               Margin="0,6,0,0" />
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <Grid Margin="0,12,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Margin="0,0,10,0">
+                                                    <TextBlock Text="NOW" Style="{StaticResource EyebrowText}" />
+                                                    <TextBlock Text="{Binding CurrentValue}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1">
+                                                    <TextBlock Text="TARGET" Style="{StaticResource EyebrowText}" />
+                                                    <TextBlock Text="{Binding RecommendedValue}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <TextBlock Text="{Binding Detail}"
+                                                       Style="{StaticResource MutedText}"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,12,0,0" />
+
+                                            <Expander Header="Mechanism, trade-off and exact changes" Margin="0,10,0,0">
+                                                <StackPanel Margin="0,8,0,0">
+                                                    <TextBlock Text="HOW IT WORKS" Style="{StaticResource EyebrowText}" />
+                                                    <TextBlock Text="{Binding Mechanism}" TextWrapping="Wrap" Style="{StaticResource MutedText}" Margin="0,2,0,8" />
+                                                    <TextBlock Text="WHY IT HELPS" Style="{StaticResource EyebrowText}" />
+                                                    <TextBlock Text="{Binding Rationale}" TextWrapping="Wrap" Style="{StaticResource MutedText}" Margin="0,2,0,8" />
+                                                    <TextBlock Text="TRADE-OFF" Style="{StaticResource EyebrowText}" />
+                                                    <TextBlock Text="{Binding Tradeoff}" TextWrapping="Wrap" Style="{StaticResource MutedText}" Margin="0,2,0,8" />
+                                                    <TextBlock Text="EXACT CHANGES" Style="{StaticResource EyebrowText}" />
+                                                    <Border Background="#0C131D" CornerRadius="6" Padding="10,8" Margin="0,4,0,0">
+                                                        <TextBlock Text="{Binding PlanText}"
+                                                                   FontFamily="Consolas"
+                                                                   FontSize="11"
+                                                                   TextWrapping="Wrap"
+                                                                   Foreground="#9FD9F5" />
+                                                    </Border>
+                                                </StackPanel>
+                                            </Expander>
+
+                                            <Grid Margin="0,14,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel VerticalAlignment="Center">
+                                                    <TextBlock Text="{Binding Requirements}" Style="{StaticResource MutedText}" FontSize="11" />
+                                                    <TextBlock Text="{Binding BlockedReason}"
+                                                               Foreground="#FFD477"
+                                                               FontSize="11"
+                                                               TextWrapping="Wrap"
+                                                               Margin="0,4,0,0"
+                                                               Visibility="{Binding HasBlockedReason, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                                </StackPanel>
+                                                <Button Grid.Column="1"
+                                                        Content="Apply"
+                                                        MinWidth="120"
+                                                        Click="ApplyExpertTweak_Click"
+                                                        IsEnabled="{Binding CanApply}"
+                                                        Visibility="{Binding CanApply, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                            </Grid>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <Border Style="{StaticResource CardBorder}" Margin="0,10,0,0">
+                            <StackPanel>
+                                <TextBlock Text="APPLIED CHANGES" Style="{StaticResource EyebrowText}" />
+                                <TextBlock Style="{StaticResource MutedText}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,4,0,10"
+                                           Text="Each entry holds the exact value that was replaced. Reverting compares the live value first, so a change made by something else after this transaction is preserved rather than overwritten." />
+                                <ItemsControl ItemsSource="{Binding ExpertTransactions}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="{StaticResource PanelAltBrush}"
+                                                    BorderBrush="{StaticResource BorderBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="8"
+                                                    Padding="14,10"
+                                                    Margin="0,0,0,8">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                        <TextBlock Style="{StaticResource MutedText}" FontSize="11" Margin="0,3,0,0">
+                                                            <Run Text="{Binding State, Mode=OneWay}" />
+                                                            <Run Text=" - " />
+                                                            <Run Text="{Binding AppliedAt, Mode=OneWay}" />
+                                                        </TextBlock>
+                                                        <TextBlock Text="{Binding Detail}"
+                                                                   FontFamily="Consolas"
+                                                                   FontSize="11"
+                                                                   Foreground="#9FD9F5"
+                                                                   TextWrapping="Wrap"
+                                                                   Margin="0,6,0,0" />
+                                                        <TextBlock Text="{Binding Observation}"
+                                                                   Style="{StaticResource MutedText}"
+                                                                   FontSize="11"
+                                                                   TextWrapping="Wrap"
+                                                                   Margin="0,4,0,0" />
+                                                    </StackPanel>
+                                                    <Button Grid.Column="1"
+                                                            Content="Revert"
+                                                            MinWidth="100"
+                                                            VerticalAlignment="Center"
+                                                            Style="{StaticResource SecondaryButton}"
+                                                            Click="RevertExpertTweak_Click"
+                                                            Visibility="{Binding CanRevert, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
             <TabItem Header="Measure frame pacing">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="4,18,4,4">
                     <StackPanel MaxWidth="1120" HorizontalAlignment="Stretch">

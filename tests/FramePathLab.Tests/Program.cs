@@ -8,6 +8,7 @@ using FramePathLab.Core.Persistence;
 using FramePathLab.Core.Reporting;
 using FramePathLab.Core.Services;
 using FramePathLab.Core.Statistics;
+using FramePathLab.Windows.Mutation;
 using FramePathLab.Windows.Power;
 using FramePathLab.Windows.Scanning;
 
@@ -33,7 +34,21 @@ internal static class Program
         ("Power session preflights Group Policy without mutation", TestPowerSessionPolicyPreflightAsync),
         ("Power session guardian failure prevents system mutation", TestPowerSessionGuardianArmFailureAsync),
         ("Power session recovers when target setter changes then throws", TestPowerSessionSetterThrowsAfterChangeAsync),
-        ("Power journal round-trips and rejects tampering", TestPowerJournalIntegrityAsync)
+        ("Power journal round-trips and rejects tampering", TestPowerJournalIntegrityAsync),
+        ("Mutation executor applies and restores a registry value", TestMutationRoundTripAsync),
+        ("Mutation executor removes a value it created", TestMutationRemovesCreatedValueAsync),
+        ("Mutation executor preserves an external change on revert", TestMutationPreservesExternalChangeAsync),
+        ("Tweak journal round-trips and rejects tampering", TestTweakJournalIntegrityAsync),
+        ("Expert engine applies, journals and reverts", TestExpertEngineApplyRevertAsync),
+        ("Expert engine blocks elevated writes when not elevated", TestExpertEngineElevationGateAsync),
+        ("Expert engine rolls back a partial apply", TestExpertEnginePartialApplyAsync),
+        ("Expert engine fails closed when a before-state is unreadable", TestExpertEngineFailsClosedAsync),
+        ("Delivery analyzer flags a composed present path", TestDeliveryComposedPathAsync),
+        ("Delivery analyzer classifies the limiting stage", TestDeliveryBoundClassAsync),
+        ("Delivery analyzer reads vertical sync from the capture", TestDeliverySyncIntervalAsync),
+        ("CPU topology resolves core groups", TestCpuTopologyAsync),
+        ("Display timing returns an exact rational refresh", TestDisplayTimingAsync),
+        ("Expert catalogue evaluates without mutating", TestExpertCatalogueReadOnlyAsync)
     ];
 
     public static async Task<int> Main()
@@ -608,6 +623,419 @@ internal static class Program
         {
             Current = record;
             Writes.Add(record);
+        }
+    }
+
+    // ---- Expert tier ----------------------------------------------------------------------
+
+    private const string TestRegistryPath = @"HKCU\Software\FramePathLabTests";
+
+    private static MutationPlan TestRegistryPlan(string valueName, string desired)
+        => new(
+            $"test.{valueName}",
+            MutationKind.RegistryValue,
+            TestRegistryPath,
+            valueName,
+            desired,
+            "DWord",
+            $"Test mutation for {valueName}");
+
+    private static void ClearTestRegistry()
+    {
+        using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software", writable: true);
+        key?.DeleteSubKeyTree("FramePathLabTests", throwOnMissingSubKey: false);
+    }
+
+    private static Task TestMutationRoundTripAsync()
+    {
+        ClearTestRegistry();
+        try
+        {
+            var executor = new WindowsMutationExecutor();
+            var seed = TestRegistryPlan("Existing", "7");
+            executor.Apply(seed);
+
+            var plan = TestRegistryPlan("Existing", "42");
+            var applied = executor.Apply(plan);
+            Assert(applied.ExistedBefore, "value should have existed before the second apply");
+            AssertEqual("7", applied.BeforeValue ?? "<null>", "captured before-value");
+            AssertEqual("42", applied.ObservedAfterValue ?? "<null>", "read-back after apply");
+            Assert(applied.VerifiedAfterWrite, "apply should verify by read-back");
+
+            var reverted = executor.Revert(applied);
+            AssertEqual("7", reverted.ObservedAfterValue ?? "<null>", "restored value");
+            Assert(reverted.VerifiedAfterWrite, "revert should verify by read-back");
+            return Task.CompletedTask;
+        }
+        finally
+        {
+            ClearTestRegistry();
+        }
+    }
+
+    private static Task TestMutationRemovesCreatedValueAsync()
+    {
+        ClearTestRegistry();
+        try
+        {
+            var executor = new WindowsMutationExecutor();
+            var plan = TestRegistryPlan("Created", "1");
+            var applied = executor.Apply(plan);
+            Assert(!applied.ExistedBefore, "value must not have existed before");
+
+            var reverted = executor.Revert(applied);
+            executor.Read(plan, out var stillExists);
+            Assert(!stillExists, "a value FramePath Lab created must be removed on revert");
+            Assert(reverted.VerifiedAfterWrite, "removal should verify");
+            return Task.CompletedTask;
+        }
+        finally
+        {
+            ClearTestRegistry();
+        }
+    }
+
+    private static Task TestMutationPreservesExternalChangeAsync()
+    {
+        ClearTestRegistry();
+        try
+        {
+            var executor = new WindowsMutationExecutor();
+            executor.Apply(TestRegistryPlan("External", "1"));
+            var applied = executor.Apply(TestRegistryPlan("External", "2"));
+
+            // Something else takes ownership of the value after we wrote it.
+            executor.Apply(TestRegistryPlan("External", "99"));
+
+            var reverted = executor.Revert(applied);
+            executor.Read(TestRegistryPlan("External", "0"), out _);
+            AssertEqual("99", reverted.ObservedAfterValue ?? "<null>", "external value must survive the revert");
+            Assert(
+                reverted.Observation.StartsWith("Left unchanged", StringComparison.Ordinal),
+                "revert should report that it preserved a newer external change");
+            return Task.CompletedTask;
+        }
+        finally
+        {
+            ClearTestRegistry();
+        }
+    }
+
+    private static async Task TestTweakJournalIntegrityAsync()
+    {
+        await WithTemporaryDirectoryAsync(directory =>
+        {
+            var store = new TweakJournalStore(directory);
+            var transaction = new TweakTransaction(
+                Guid.NewGuid(),
+                "TEST-001",
+                "Test tweak",
+                DateTimeOffset.UtcNow,
+                null,
+                false,
+                [],
+                TweakTransaction.StateApplied,
+                "applied");
+            store.Upsert(transaction);
+
+            var read = store.Read();
+            AssertEqual(1, read.Count, "journal entry count");
+            AssertEqual("TEST-001", read[0].TweakId, "round-tripped tweak id");
+            Assert(read[0].IsOutstanding, "applied transaction should be outstanding");
+
+            var path = Path.Combine(directory, "expert-tweaks.v1.json");
+            File.WriteAllText(path, File.ReadAllText(path).Replace("TEST-001", "TEST-XXX", StringComparison.Ordinal));
+            AssertThrows<InvalidDataException>(() => store.Read());
+            return Task.CompletedTask;
+        });
+    }
+
+    private static ExpertTweakCard BuildTestCard(
+        string id,
+        IReadOnlyList<MutationPlan> plan,
+        TweakState state = TweakState.Suboptimal)
+        => new(
+            new ExpertTweakDefinition(
+                id, "Test", $"{id} title", "mechanism", "rationale", "tradeoff",
+                TweakRisk.Low, TweakScope.CurrentUser, EvidenceQuality.Moderate,
+                false, false, false, []),
+            new TweakReading(state, "current", "recommended", "detail"),
+            plan,
+            null);
+
+    private static async Task TestExpertEngineApplyRevertAsync()
+    {
+        ClearTestRegistry();
+        try
+        {
+            await WithTemporaryDirectoryAsync(directory =>
+            {
+                var engine = new ExpertTweakEngine(
+                    new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: true);
+
+                var card = BuildTestCard("ENGINE-001", [
+                    TestRegistryPlan("EngineA", "1"),
+                    TestRegistryPlan("EngineB", "2")
+                ]);
+
+                var applied = engine.Apply(card);
+                AssertEqual(TweakTransaction.StateApplied, applied.State, "applied state");
+                AssertEqual(1, engine.OutstandingTransactions().Count, "outstanding count after apply");
+
+                var reverted = engine.Revert(applied.TransactionId, "test");
+                AssertEqual(TweakTransaction.StateReverted, reverted.State, "reverted state");
+                AssertEqual(0, engine.OutstandingTransactions().Count, "outstanding count after revert");
+
+                var executor = new WindowsMutationExecutor();
+                executor.Read(TestRegistryPlan("EngineA", "0"), out var aExists);
+                executor.Read(TestRegistryPlan("EngineB", "0"), out var bExists);
+                Assert(!aExists && !bExists, "both created values must be removed on revert");
+                return Task.CompletedTask;
+            });
+        }
+        finally
+        {
+            ClearTestRegistry();
+        }
+    }
+
+    private static async Task TestExpertEngineElevationGateAsync()
+    {
+        await WithTemporaryDirectoryAsync(directory =>
+        {
+            var engine = new ExpertTweakEngine(
+                new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: false);
+
+            var machinePlan = new MutationPlan(
+                "test.machine",
+                MutationKind.RegistryValue,
+                @"HKLM\SOFTWARE\FramePathLabTests",
+                "Value",
+                "1",
+                "DWord",
+                "machine-scope test mutation");
+
+            var gated = typeof(ExpertTweakEngine)
+                .GetMethod("GateOnElevation", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                .Invoke(engine, [BuildTestCard("ELEV-001", [machinePlan])]) as ExpertTweakCard;
+
+            Assert(gated is not null, "gate returned nothing");
+            Assert(gated!.BlockedReason is not null, "machine-scope write must be blocked without elevation");
+            Assert(!gated.CanApply, "blocked card must not be applicable");
+            return Task.CompletedTask;
+        });
+    }
+
+    private static async Task TestExpertEnginePartialApplyAsync()
+    {
+        ClearTestRegistry();
+        try
+        {
+            await WithTemporaryDirectoryAsync(directory =>
+            {
+                var engine = new ExpertTweakEngine(
+                    new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: true);
+
+                // The second mutation reads cleanly (the process simply is not running) but cannot
+                // be written, so the first one lands and then the tweak fails mid-apply.
+                var card = BuildTestCard("PARTIAL-001", [
+                    TestRegistryPlan("PartialA", "5"),
+                    new MutationPlan(
+                        "test.absent-process",
+                        MutationKind.ProcessAffinity,
+                        "framepathlab-no-such-process",
+                        "ProcessorAffinity",
+                        "1",
+                        "Mask",
+                        "affinity on a process that is not running")
+                ]);
+
+                var result = engine.Apply(card);
+                AssertEqual(TweakTransaction.StateReverted, result.State,
+                    "a failed apply must automatically roll back and report a clean revert");
+
+                var executor = new WindowsMutationExecutor();
+                executor.Read(TestRegistryPlan("PartialA", "0"), out var exists);
+                Assert(!exists, "the mutation that did land must be undone");
+                Assert(
+                    result.Mutations.Any(record => !record.AttemptedWrite),
+                    "the unwritten mutation must be recorded as never attempted");
+                return Task.CompletedTask;
+            });
+        }
+        finally
+        {
+            ClearTestRegistry();
+        }
+    }
+
+    private static async Task TestExpertEngineFailsClosedAsync()
+    {
+        ClearTestRegistry();
+        try
+        {
+            await WithTemporaryDirectoryAsync(directory =>
+            {
+                var journal = new TweakJournalStore(directory);
+                var engine = new ExpertTweakEngine(new WindowsMutationExecutor(), journal, isElevated: true);
+
+                // An unreadable target means no before-state can be captured, so nothing may be
+                // written at all: applying it would create a change that could never be undone.
+                var card = BuildTestCard("FAILCLOSED-001", [
+                    TestRegistryPlan("NeverWritten", "5"),
+                    new MutationPlan("test.bad-hive", MutationKind.RegistryValue, @"HKXX\Nope", "V", "1", "DWord", "bad")
+                ]);
+
+                AssertThrows<ArgumentException>(() => engine.Apply(card));
+
+                new WindowsMutationExecutor().Read(TestRegistryPlan("NeverWritten", "0"), out var exists);
+                Assert(!exists, "no value may be written when a before-state cannot be captured");
+                AssertEqual(0, journal.Read().Count, "no transaction may be journalled for a refused apply");
+                return Task.CompletedTask;
+            });
+        }
+        finally
+        {
+            ClearTestRegistry();
+        }
+    }
+
+    private static Task TestDeliveryComposedPathAsync()
+    {
+        var findings = FrameDeliveryAnalyzer.Analyze(
+            new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase) { ["Composed: Flip"] = 1000 },
+            [4.0, 4.1, 4.0],
+            [], [], [], [], [], 0);
+
+        var path = findings.Single(finding => finding.Id == "PRESENT-PATH");
+        AssertEqual(DeliverySeverity.Costly, path.Severity, "composed path severity");
+
+        var good = FrameDeliveryAnalyzer.Analyze(
+            new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase) { ["Hardware: Independent Flip"] = 1000 },
+            [4.0, 4.1, 4.0],
+            [], [], [], [], [], 0);
+        AssertEqual(DeliverySeverity.Good, good.Single(finding => finding.Id == "PRESENT-PATH").Severity,
+            "independent flip severity");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestDeliveryBoundClassAsync()
+    {
+        var cpuBound = FrameDeliveryAnalyzer.Analyze(
+            new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase),
+            [4.0, 4.0],
+            [5.0, 5.0, 5.0],
+            [1.0, 1.0, 1.0],
+            [], [], [], 0);
+        Assert(
+            cpuBound.Single(finding => finding.Id == "BOUND-CLASS").Observed.Contains("CPU-bound", StringComparison.Ordinal),
+            "should classify as CPU-bound");
+
+        var gpuBound = FrameDeliveryAnalyzer.Analyze(
+            new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase),
+            [4.0, 4.0],
+            [1.0, 1.0, 1.0],
+            [5.0, 5.0, 5.0],
+            [], [], [], 0);
+        Assert(
+            gpuBound.Single(finding => finding.Id == "BOUND-CLASS").Observed.Contains("GPU-bound", StringComparison.Ordinal),
+            "should classify as GPU-bound");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestDeliverySyncIntervalAsync()
+    {
+        var synced = FrameDeliveryAnalyzer.Analyze(
+            new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase),
+            [4.0, 4.0], [], [],
+            [1, 1, 1, 1],
+            [], [], 0);
+        AssertEqual(DeliverySeverity.Advisory,
+            synced.Single(finding => finding.Id == "SYNC-INTERVAL").Severity, "vsync-on severity");
+
+        var unsynced = FrameDeliveryAnalyzer.Analyze(
+            new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase),
+            [4.0, 4.0], [], [],
+            [0, 0, 0, 0],
+            [], [], 0);
+        AssertEqual(DeliverySeverity.Good,
+            unsynced.Single(finding => finding.Id == "SYNC-INTERVAL").Severity, "vsync-off severity");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestCpuTopologyAsync()
+    {
+        var topology = CpuTopologyScanner.Scan(null);
+        Assert(topology.LogicalProcessorCount > 0, "logical processor count must be positive");
+        Assert(topology.CoreGroups.Count > 0, "at least one core group must be resolved");
+        Assert(topology.SystemAffinityMask != 0, "system affinity mask must be readable");
+
+        // Every core group must be a subset of what the system actually offers.
+        foreach (var group in topology.CoreGroups)
+        {
+            Assert(
+                (group.AffinityMask & topology.SystemAffinityMask) == group.AffinityMask,
+                $"core group {group.GroupIndex} escapes the system affinity mask");
+        }
+
+        // A preferred mask is only ever offered when it is a genuine subset of the whole machine.
+        if (topology.HasDistinctPreferredGroup)
+        {
+            Assert(topology.PreferredAffinityMask != topology.SystemAffinityMask,
+                "a preferred mask equal to the whole system is not a placement decision");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static Task TestDisplayTimingAsync()
+    {
+        var timings = DisplayTimingScanner.Scan();
+        foreach (var timing in timings)
+        {
+            Assert(timing.VerticalDenominator != 0, "rational refresh must have a non-zero denominator");
+            Assert(timing.ExactRefreshHz is > 20 and < 1000, $"implausible refresh {timing.ExactRefreshHz}");
+            Assert(timing.RecommendedVrrCap < timing.ExactRefreshHz,
+                "the computed cap must sit below the refresh ceiling");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static async Task TestExpertCatalogueReadOnlyAsync()
+    {
+        var snapshot = await new WindowsEnvironmentScanner().ScanAsync();
+        var context = await new ExpertScanCoordinator().ScanAsync(
+            snapshot, measureInput: false, measureScheduler: false, TimeSpan.Zero);
+
+        var reader = new CountingReader(new WindowsMutationExecutor());
+        var cards = ExpertTweakCatalog.Evaluate(context, reader);
+
+        Assert(cards.Count > 0, "catalogue produced no cards");
+        Assert(reader.ReadCount > 0, "catalogue never read live state");
+
+        foreach (var card in cards)
+        {
+            // The core invariant: a card only offers writes when it found something to fix.
+            if (card.Reading.State is TweakState.Optimal or TweakState.NotApplicable or TweakState.Unknown)
+            {
+                AssertEqual(0, card.Plan.Count,
+                    $"{card.Definition.Id} offers a mutation despite reporting {card.Reading.State}");
+            }
+
+            Assert(!string.IsNullOrWhiteSpace(card.Definition.Mechanism), $"{card.Definition.Id} has no mechanism");
+            Assert(!string.IsNullOrWhiteSpace(card.Definition.Tradeoff), $"{card.Definition.Id} has no trade-off");
+        }
+    }
+
+    private sealed class CountingReader(ITweakStateReader inner) : ITweakStateReader
+    {
+        public int ReadCount { get; private set; }
+
+        public string? Read(MutationPlan plan, out bool exists)
+        {
+            ReadCount++;
+            return inner.Read(plan, out exists);
         }
     }
 

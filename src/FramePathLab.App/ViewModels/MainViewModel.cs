@@ -6,6 +6,7 @@ using FramePathLab.Core.Abstractions;
 using FramePathLab.Core.Models;
 using FramePathLab.Core.Reporting;
 using FramePathLab.Core.Services;
+using FramePathLab.Windows.Scanning;
 
 namespace FramePathLab.App.ViewModels;
 
@@ -16,7 +17,13 @@ public sealed class MainViewModel : ObservableObject
     private readonly IHistoryStore _historyStore;
     private readonly MarkdownReportWriter _reportWriter;
     private readonly PowerSessionCoordinator _powerSessionCoordinator;
+    private readonly ExpertTweakEngine _expertEngine;
+    private readonly ExpertScanCoordinator _expertScanCoordinator;
     private readonly long _processStartTimeUtcTicks;
+    private ExpertScanContext? _expertContext;
+    private string _expertSummary = "Run the expert scan to read CPU topology, display timing, GPU state and input delivery.";
+    private string _expertHardware = "Not scanned";
+    private bool _measureInput = true;
     private ScanReport? _currentScan;
     private CaptureAnalysis? _currentAnalysis;
     private PowerSessionOverview? _powerOverview;
@@ -48,6 +55,8 @@ public sealed class MainViewModel : ObservableObject
         IHistoryStore historyStore,
         MarkdownReportWriter reportWriter,
         PowerSessionCoordinator powerSessionCoordinator,
+        ExpertTweakEngine expertEngine,
+        ExpertScanCoordinator expertScanCoordinator,
         string dataDirectory)
     {
         _scanCoordinator = scanCoordinator;
@@ -55,6 +64,8 @@ public sealed class MainViewModel : ObservableObject
         _historyStore = historyStore;
         _reportWriter = reportWriter;
         _powerSessionCoordinator = powerSessionCoordinator;
+        _expertEngine = expertEngine;
+        _expertScanCoordinator = expertScanCoordinator;
         DataDirectory = dataDirectory;
         using (var process = Process.GetCurrentProcess())
         {
@@ -68,6 +79,185 @@ public sealed class MainViewModel : ObservableObject
             SetError);
         DeleteHistoryCommand = new AsyncRelayCommand(DeleteHistoryAsync, () => !IsBusy, SetError);
         RefreshHistoryCommand = new AsyncRelayCommand(RefreshHistoryAsync, () => !IsBusy, SetError);
+        ExpertScanCommand = new AsyncRelayCommand(ExpertScanAsync, () => !IsBusy, SetError);
+        RevertAllExpertCommand = new AsyncRelayCommand(
+            RevertAllExpertAsync,
+            () => !IsBusy && ExpertTransactions.Any(entry => entry.CanRevert),
+            SetError);
+    }
+
+    public ObservableCollection<ExpertTweakDisplay> ExpertTweaks { get; } = [];
+
+    public ObservableCollection<ExpertTransactionDisplay> ExpertTransactions { get; } = [];
+
+    public AsyncRelayCommand ExpertScanCommand { get; }
+
+    public AsyncRelayCommand RevertAllExpertCommand { get; }
+
+    public string ExpertSummary
+    {
+        get => _expertSummary;
+        private set => SetProperty(ref _expertSummary, value);
+    }
+
+    public string ExpertHardware
+    {
+        get => _expertHardware;
+        private set => SetProperty(ref _expertHardware, value);
+    }
+
+    /// <summary>
+    /// The report-rate measurement needs the user to keep moving the mouse, so it stays opt-in
+    /// rather than silently producing a meaningless reading.
+    /// </summary>
+    public bool MeasureInput
+    {
+        get => _measureInput;
+        set => SetProperty(ref _measureInput, value);
+    }
+
+    public string ExpertScanButtonText => IsBusy ? "Scanning…" : "Run expert scan";
+
+    private async Task ExpertScanAsync()
+    {
+        IsBusy = true;
+        StatusText = MeasureInput
+            ? "Reading expert-tier state. Keep moving the mouse for the input measurement…"
+            : "Reading expert-tier state…";
+        try
+        {
+            var snapshot = _currentScan?.Snapshot ?? (await _scanCoordinator.RunAsync()).Snapshot;
+            _expertContext = await _expertScanCoordinator.ScanAsync(
+                snapshot,
+                MeasureInput,
+                measureScheduler: true,
+                TimeSpan.FromSeconds(5));
+
+            RebuildExpertCards();
+            StatusText = "Expert scan complete. Every listed change shows the exact value it writes.";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private void RebuildExpertCards()
+    {
+        if (_expertContext is null)
+        {
+            return;
+        }
+
+        var cards = _expertEngine.Evaluate(_expertContext);
+        ExpertTweaks.Clear();
+        foreach (var card in cards)
+        {
+            ExpertTweaks.Add(new ExpertTweakDisplay(card));
+        }
+
+        var available = cards.Count(card => card.CanApply);
+        var blocked = cards.Count(card => card.BlockedReason is not null);
+        var unreadable = cards.Count(card => card.Reading.State == TweakState.Unknown);
+        ExpertSummary = $"{available} change{(available == 1 ? string.Empty : "s")} available · "
+                        + $"{blocked} blocked · {unreadable} not readable on this system · "
+                        + $"{cards.Count} checked in total.";
+
+        var cpu = _expertContext.Cpu;
+        var timing = _expertContext.PrimaryTiming;
+        ExpertHardware = $"{cpu.Brand} — {cpu.PhysicalCoreCount}C/{cpu.LogicalProcessorCount}T"
+                         + $"{(cpu.IsHybrid ? ", hybrid" : string.Empty)}, {cpu.CoreGroups.Count} core group(s)"
+                         + (timing is not null
+                             ? $" · {timing.ExactRefreshHz:0.###} Hz exact refresh"
+                             : string.Empty);
+
+        RefreshExpertTransactions();
+    }
+
+    private void RefreshExpertTransactions()
+    {
+        ExpertTransactions.Clear();
+        foreach (var transaction in _expertEngine.AllTransactions()
+                     .OrderByDescending(entry => entry.AppliedAtUtc))
+        {
+            ExpertTransactions.Add(new ExpertTransactionDisplay(transaction));
+        }
+
+        RevertAllExpertCommand.RaiseCanExecuteChanged();
+    }
+
+    public async Task ApplyExpertTweakAsync(ExpertTweakDisplay display)
+    {
+        ArgumentNullException.ThrowIfNull(display);
+        IsBusy = true;
+        StatusText = $"Applying {display.Title} and recording the exact prior value…";
+        try
+        {
+            var transaction = await Task.Run(() => _expertEngine.Apply(display.Card));
+            StatusText = transaction.State == TweakTransaction.StateApplied
+                ? $"{display.Title}: {transaction.LastObservation}"
+                : $"{display.Title} did not fully apply. {transaction.LastObservation}";
+
+            if (_expertContext is not null)
+            {
+                RebuildExpertCards();
+            }
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task RevertExpertTransactionAsync(Guid transactionId)
+    {
+        IsBusy = true;
+        StatusText = "Restoring the exact recorded prior value…";
+        try
+        {
+            var transaction = await Task.Run(
+                () => _expertEngine.Revert(transactionId, "reverted from the expert tab"));
+            StatusText = transaction.LastObservation;
+            if (_expertContext is not null)
+            {
+                RebuildExpertCards();
+            }
+            else
+            {
+                RefreshExpertTransactions();
+            }
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private async Task RevertAllExpertAsync()
+    {
+        IsBusy = true;
+        StatusText = "Reverting every outstanding expert tweak…";
+        try
+        {
+            var reverted = await Task.Run(() => _expertEngine.RevertAll("revert all from the expert tab"));
+            var failed = reverted.Count(entry => entry.State != TweakTransaction.StateReverted);
+            StatusText = failed == 0
+                ? $"Reverted {reverted.Count} transaction(s); every value was restored and verified."
+                : $"Reverted {reverted.Count} transaction(s) with {failed} needing review.";
+
+            if (_expertContext is not null)
+            {
+                RebuildExpertCards();
+            }
+            else
+            {
+                RefreshExpertTransactions();
+            }
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
 
     public ObservableCollection<FindingCard> Findings { get; } = [];
@@ -245,7 +435,10 @@ public sealed class MainViewModel : ObservableObject
                 DeleteHistoryCommand.RaiseCanExecuteChanged();
                 RefreshHistoryCommand.RaiseCanExecuteChanged();
                 OnPropertyChanged(nameof(ScanButtonText));
+                OnPropertyChanged(nameof(ExpertScanButtonText));
                 OnPropertyChanged(nameof(AreActionsEnabled));
+                ExpertScanCommand.RaiseCanExecuteChanged();
+                RevertAllExpertCommand.RaiseCanExecuteChanged();
                 NotifyPowerCommandState();
             }
         }
