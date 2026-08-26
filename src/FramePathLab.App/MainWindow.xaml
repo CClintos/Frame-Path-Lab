@@ -325,6 +325,47 @@
                                             MinWidth="120"
                                             Margin="14,0,0,0" />
                                 </StackPanel>
+
+                                <TextBlock TextWrapping="Wrap"
+                                           Style="{StaticResource MutedText}"
+                                           Margin="0,16,0,0"
+                                           Text="Another machine: collect a snapshot on the PC you are tuning, review it here, and carry the chosen changes back as a plan. Nothing in review mode writes to this computer." />
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                    <Button Content="Save snapshot of this PC"
+                                            Command="{Binding CollectSnapshotCommand}"
+                                            MinWidth="190" />
+                                    <Button Content="Open snapshot…"
+                                            Command="{Binding OpenSnapshotCommand}"
+                                            MinWidth="150"
+                                            Margin="14,0,0,0" />
+                                    <Button Content="Export plan for that PC"
+                                            Command="{Binding ExportPlanCommand}"
+                                            MinWidth="180"
+                                            Margin="14,0,0,0" />
+                                </StackPanel>
+
+                                <Border Background="#12374A"
+                                        BorderBrush="#7EDBFF"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        Padding="12,9"
+                                        Margin="0,14,0,0"
+                                        Visibility="{Binding IsReviewingRemoteMachine, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <StackPanel>
+                                        <TextBlock Text="REVIEWING ANOTHER MACHINE — NOTHING HERE WRITES TO THIS PC"
+                                                   Foreground="#7EDBFF"
+                                                   FontWeight="SemiBold"
+                                                   FontSize="11" />
+                                        <TextBlock Text="{Binding RemoteBanner}"
+                                                   Foreground="#D6E4F0"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,5,0,0" />
+                                        <TextBlock Text="Tick the changes you want, export a plan, then run FramePathLab.exe --apply on that machine. Scan this PC to leave review mode."
+                                                   Style="{StaticResource MutedText}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,5,0,0" />
+                                    </StackPanel>
+                                </Border>
                             </StackPanel>
                         </Border>
 
@@ -420,12 +461,18 @@
                                                                Margin="0,4,0,0"
                                                                Visibility="{Binding HasBlockedReason, Converter={StaticResource BooleanToVisibilityConverter}}" />
                                                 </StackPanel>
-                                                <Button Grid.Column="1"
-                                                        Content="Apply"
-                                                        MinWidth="120"
-                                                        Click="ApplyExpertTweak_Click"
-                                                        IsEnabled="{Binding CanApply}"
-                                                        Visibility="{Binding CanApply, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                    <CheckBox Content="Include in plan"
+                                                              IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                                              VerticalAlignment="Center"
+                                                              Foreground="#7EDBFF"
+                                                              Visibility="{Binding ShowSelection, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                                    <Button Content="Apply"
+                                                            MinWidth="120"
+                                                            Click="ApplyExpertTweak_Click"
+                                                            IsEnabled="{Binding CanApply}"
+                                                            Visibility="{Binding ShowApplyButton, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                                </StackPanel>
                                             </Grid>
                                         </StackPanel>
                                     </Border>

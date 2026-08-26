@@ -306,6 +306,22 @@ public sealed record BootTimingState(
         => UsePlatformClock == true || UsePlatformTick == true;
 }
 
+/// <summary>One present device in a class the policy permits offering.</summary>
+public sealed record DeviceEntry(
+    string InstanceId,
+    string Name,
+    string DeviceClass,
+    bool Disabled,
+    bool InUse);
+
+public sealed record DeviceInventory(
+    bool Available,
+    IReadOnlyList<DeviceEntry> Devices,
+    string Observation)
+{
+    public static DeviceInventory Unavailable(string reason) => new(false, [], reason);
+}
+
 public sealed record NvidiaProfileSetting(string Name, string Value, string Recommended, bool IsOptimal);
 
 public sealed record NvidiaProfileState(

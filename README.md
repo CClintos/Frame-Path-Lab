@@ -201,6 +201,49 @@ Only the start type is ever written, only on a curated service, and the prior va
 
 **On what this is worth:** mostly not frame rate. Services cost background wakeups, memory and — for the few that touch storage — disk activity that can land inside a frame. Content indexing and the prefetcher are the two most likely to show up. Several will measure as doing nothing, which is a fine result and precisely why each is separate and why `abtest` exists. Do not take the list on faith.
 
+## Devices
+
+Present devices that are running a driver while nothing is using them. A loaded driver can take interrupts and queue deferred calls whether or not the hardware is doing anything, and the ones that misbehave are usually a second network adapter, a Bluetooth radio scanning for nothing, or an onboard codec left enabled while sound leaves over USB.
+
+Two gates:
+
+1. **The class is offerable.** Bluetooth, network, audio, imaging, biometrics, smart-card readers, sensors, printers and modems. Everything else is refused at the allowlist — input, USB, storage, display, processors, firmware, system devices. Unrecognised classes fail closed.
+2. **Nothing is using it.** Checked against the live routing table and the audio endpoints, not against the device name. The adapter carrying the connection is refused outright, and where only one audio endpoint exists every audio device is treated as in use, because mapping an endpoint back to the codec behind it by name is not reliable and being wrong there means offering to disable the sound.
+
+The disable is deliberately **not persistent** — the device returns on the next restart. A wrong call costs a reboot rather than a support session, which is what makes this cheap enough to actually test.
+
+**On what this is worth:** less than the internet thinks. Mechanically it does remove that driver's interrupt activity. Whether removing it matters depends on whether the driver was doing anything, and most idle devices were not. On the development machine the filters left exactly two candidates out of everything present. It is offered as an experiment with an A/B behind it, not as a recommendation.
+
+## Another machine
+
+The machine worth tuning and the machine worth sitting at are rarely the same one, and that is not incidental — a competitive machine is kept deliberately clean, and the point of tuning it is that it is about to be played on.
+
+So collection, review and application are three separate steps, and only two of them happen on the target:
+
+```bash
+FramePathLab.exe --collect
+```
+
+Reads the machine and writes a `.fplscan` file to the desktop. About a minute, no prompts, no writes. Run it as administrator or most of the catalogue comes back unreadable, and it will say so.
+
+Copy that file anywhere — a laptop, a different desk — and open it with **Open snapshot**. The whole catalogue evaluates against it: same cards, same verdicts, same exact writes listed, with every apply control replaced by a tick box and a banner that says nothing there writes to the machine you are sitting at. Tick what you want and **Export plan**.
+
+Take the `.fplplan` back and:
+
+```bash
+FramePathLab.exe --apply GAMING-PC-20260827-1830.fplplan
+```
+
+Which rescans, refuses if the fingerprint says this is the wrong computer, and applies through the same ledger, allowlist and read-back verification as any other change — then writes a result file listing what landed and what did not.
+
+Three properties make this safe rather than convenient:
+
+- **A snapshot carries observations only.** There is no instruction in it. Opening one from an untrusted source can at worst describe a machine that does not exist.
+- **A plan carries identifiers only** — never registry paths, values or device nodes. The target re-derives every write from its own compiled-in catalogue against its own fresh scan. An edited plan file can only ever select from what that machine was already willing to do; it cannot introduce a write, retarget one, or smuggle a value past the guard. A plan that carried mutations directly would be a command channel into an elevated process, which is the hole the allowlist exists to close.
+- **Review reproduces the target's gates**, including the allowlist and whether the collection ran elevated, so what is selectable on the laptop is what will actually be offered on the desktop.
+
+Snapshots work by recording every question the catalogue asks the machine and replaying the answers, so the review path and the live path run identical code. A read with no recorded answer reports the surface as absent rather than guessing at it, which is what an older snapshot genuinely knows.
+
 ## Checked and excluded
 
 Fourteen entries, each with its reasoning recorded. A sample:

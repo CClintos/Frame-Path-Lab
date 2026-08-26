@@ -5,6 +5,22 @@ namespace FramePathLab.App.ViewModels;
 /// <summary>View projection of one expert tweak, including the exact writes it would perform.</summary>
 public sealed record ExpertTweakDisplay(ExpertTweakCard Card)
 {
+    /// <summary>
+    /// True when this card describes a machine other than the one running the app.
+    ///
+    /// Reviewing someone else's machine and reviewing your own look nearly identical, which is
+    /// exactly why the difference has to be visible per card rather than only in a banner: the one
+    /// thing that must never happen is a click here landing on the wrong computer.
+    /// </summary>
+    public bool IsRemoteReview { get; init; }
+
+    /// <summary>Ticked to carry this change back to the machine it was read from.</summary>
+    public bool IsSelected { get; set; }
+
+    public bool ShowSelection => IsRemoteReview && Card.CanApply;
+
+    public bool ShowApplyButton => !IsRemoteReview && Card.CanApply;
+
     public string Id => Card.Definition.Id;
 
     public string Category => Card.Definition.Category;

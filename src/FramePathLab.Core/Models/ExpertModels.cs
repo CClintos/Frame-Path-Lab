@@ -77,7 +77,13 @@ public enum MutationKind
     ProcessAffinity,
     ProcessPriority,
     ProcessPowerThrottling,
-    BootConfigurationValue
+    BootConfigurationValue,
+
+    /// <summary>
+    /// Enabling or disabling a device node. Deliberately non-persistent: the device returns on the
+    /// next boot, so a disable that turns out to be wrong costs a restart rather than the machine.
+    /// </summary>
+    DeviceState
 }
 
 /// <summary>
@@ -217,6 +223,7 @@ public sealed record ExpertScanContext(
     ulong? ReservedCpuSetMask,
     string ReservedCpuSetObservation,
     ServiceInventory Services,
+    DeviceInventory Devices,
     int UsbControllers,
     int ModeratedUsbControllers,
     string UsbModerationObservation);

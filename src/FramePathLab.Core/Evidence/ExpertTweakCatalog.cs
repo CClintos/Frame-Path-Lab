@@ -149,6 +149,7 @@ public static class ExpertTweakCatalog
 
         cards.AddRange(NvidiaProfileCards(context));
         cards.AddRange(ServiceCards(context));
+        cards.AddRange(DeviceCards(context));
         cards.AddRange(DebunkRegister());
 
         cards.AddRange(NetworkTweaks(context, reader));
@@ -3047,6 +3048,106 @@ public static class ExpertTweakCatalog
                     "Disabled",
                     $"{candidate.OnlyIf} Nothing currently running depends on it. "
                     + "The prior start type is recorded, so this is reversible in place."),
+                [plan],
+                null);
+        }
+    }
+
+    // ---- Devices -----------------------------------------------------------------------------
+
+    /// <summary>
+    /// One card per present device in an offerable class that is not currently carrying work.
+    ///
+    /// The honest framing matters here more than usual, because the technique is oversold. Disabling
+    /// a device removes its interrupt and deferred-call activity entirely, and that much is
+    /// mechanical. Whether removing it matters depends on whether that particular driver was doing
+    /// anything, and for most idle devices it was not. The ones worth testing are the ones running a
+    /// driver that stays busy with nothing attached: a second network adapter, a Bluetooth radio
+    /// scanning for nothing, an onboard codec left enabled while sound leaves over a headset.
+    ///
+    /// So these are experiments rather than recommendations. The catalogue cannot know whether a
+    /// given driver on a given machine is badly behaved. The paired comparison can.
+    /// </summary>
+    private static IEnumerable<ExpertTweakCard> DeviceCards(ExpertScanContext context)
+    {
+        var inventory = context.Devices;
+        if (!inventory.Available)
+        {
+            yield break;
+        }
+
+        foreach (var device in inventory.Devices)
+        {
+            if (!DeviceClassPolicy.OfferableClasses.TryGetValue(device.DeviceClass, out var loss))
+            {
+                continue;
+            }
+
+            var definition = new ExpertTweakDefinition(
+                $"DEVICE-{device.InstanceId}",
+                "Devices",
+                $"{device.Name}",
+                "A present device keeps its driver loaded, and a loaded driver may take interrupts and "
+                + "queue deferred calls whether or not anything is using the hardware.",
+                "Disabling it removes that activity entirely. Whether that is worth anything depends "
+                + "on whether the driver was doing something, which varies by vendor and by version "
+                + "rather than by device type — so this is offered to be measured, not assumed. The "
+                + "devices most often worth testing are a second network adapter, a Bluetooth radio, "
+                + "and an onboard audio codec that nothing is listening to.",
+                $"You lose: {loss}",
+                TweakRisk.High,
+                TweakScope.Machine,
+                EvidenceQuality.Weak,
+                true,
+                false,
+                false,
+                []);
+
+            if (device.Disabled)
+            {
+                yield return new ExpertTweakCard(
+                    definition,
+                    new TweakReading(TweakState.Optimal, "Disabled", "Disabled",
+                        "Already disabled on this machine."),
+                    [],
+                    null);
+                continue;
+            }
+
+            // Anything demonstrably carrying work is refused rather than warned about. Offering to
+            // disable the adapter holding the connection is not a trade-off, it is a mistake.
+            if (device.InUse)
+            {
+                yield return new ExpertTweakCard(
+                    definition,
+                    new TweakReading(TweakState.Blocked, "Enabled and in use", "Leave enabled",
+                        "Refused: this device is currently carrying work. Only idle devices are offered."),
+                    [],
+                    "The device is in use.");
+                continue;
+            }
+
+            var plan = new MutationPlan(
+                $"DEVICE-{device.InstanceId}.state",
+                MutationKind.DeviceState,
+                device.InstanceId,
+
+                // The class travels in the value name so the guard can re-check it on the way back
+                // out, when re-enumerating the hardware is not something a restore can depend on.
+                device.DeviceClass,
+                "disabled",
+                "State",
+                $"Disable {device.Name}");
+
+            yield return new ExpertTweakCard(
+                definition,
+                new TweakReading(
+                    TweakState.Suboptimal,
+                    $"Enabled, idle ({device.DeviceClass})",
+                    "Disabled, if the measurement supports it",
+                    "Nothing is currently using this device. The disable does not persist across a "
+                    + "restart, so if it turns out to be the wrong call a reboot undoes it — which "
+                    + "makes this one of the safer things here to test, whatever the result."),
                 [plan],
                 null);
         }

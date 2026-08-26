@@ -76,7 +76,13 @@ internal static class Program
         ("Paired test refuses to conclude from too few pairs", TestAbSmallSampleAsync),
         ("Paired test reports a real effect as conclusive", TestAbDetectsRealEffectAsync),
         ("Service allowlist admits only curated services and the start value", TestServiceAllowlistAsync),
-        ("Service cards refuse a service with live dependents", TestServiceDependencyGateAsync)
+        ("Service cards refuse a service with live dependents", TestServiceDependencyGateAsync),
+        ("Device class policy refuses everything it does not name", TestDeviceClassPolicyAsync),
+        ("Device cards never offer a device in use", TestDeviceInUseGateAsync),
+        ("A snapshot reaches the same verdicts as the machine it came from", TestSnapshotRoundTripAsync),
+        ("A plan file carries identifiers and never mutations", TestPlanCarriesNoMutationsAsync),
+        ("A plan built for another machine is refused", TestPlanTargetMismatchAsync),
+        ("Replay reports an unrecorded surface as absent", TestReplayOfUnknownKeyAsync)
     ];
 
     public static async Task<int> Main()
@@ -1895,6 +1901,261 @@ internal static class Program
             Assert(card.Definition.Tradeoff.Contains("You lose", StringComparison.Ordinal),
                 $"{name} must state what stops working");
         }
+    }
+
+    private static Task TestDeviceClassPolicyAsync()
+    {
+        // Losing any of these costs the use of the machine rather than costing frame time, so they
+        // must be refused whatever else is true.
+        foreach (var deadly in (string[])
+                 ["HIDClass", "Keyboard", "Mouse", "USB", "System", "DiskDrive", "Display", "Processor",
+                  "Volume", "SCSIAdapter", "SecurityDevices"])
+        {
+            Assert(DeviceClassPolicy.FindClassViolation(deadly) is not null,
+                $"the {deadly} class must never be offerable");
+        }
+
+        // Unknown classes fail closed rather than open.
+        Assert(DeviceClassPolicy.FindClassViolation("SomeVendorClass") is not null,
+            "an unrecognised class must be refused");
+        Assert(DeviceClassPolicy.FindClassViolation(string.Empty) is not null,
+            "a device with no class must be refused");
+
+        // And the ones that are offered must each state what stops working.
+        foreach (var (deviceClass, loss) in DeviceClassPolicy.OfferableClasses)
+        {
+            Assert(DeviceClassPolicy.FindClassViolation(deviceClass) is null,
+                $"{deviceClass} is listed as offerable but the policy refuses it");
+            Assert(loss.Length > 40, $"{deviceClass} must state what is lost, not just that it is safe");
+        }
+
+        // The guard must reach the same conclusion, since a restore replays through it.
+        Assert(
+            MutationAllowlist.FindViolation(MutationKind.DeviceState, @"PCI\VEN_1234", "HIDClass") is not null,
+            "the allowlist must refuse a never-offered device class");
+        Assert(
+            MutationAllowlist.FindViolation(MutationKind.DeviceState, @"PCI\VEN_1234", "Bluetooth") is null,
+            "the allowlist must permit an offerable device class");
+        return Task.CompletedTask;
+    }
+
+    private static async Task TestDeviceInUseGateAsync()
+    {
+        var snapshot = await new WindowsEnvironmentScanner().ScanAsync();
+        var context = await new ExpertScanCoordinator().ScanAsync(
+            snapshot, measureInput: false, measureScheduler: false, measureNetwork: false, TimeSpan.Zero);
+        var cards = ExpertTweakCatalog.Evaluate(context, new WindowsMutationExecutor());
+        var devices = cards.Where(card => card.Definition.Id.StartsWith("DEVICE-", StringComparison.Ordinal))
+            .ToArray();
+
+        if (!context.Devices.Available)
+        {
+            return;
+        }
+
+        foreach (var entry in context.Devices.Devices)
+        {
+            // Every enumerated candidate must sit on real hardware. A software node raises no
+            // interrupts, so disabling one cannot help and offering it is noise.
+            Assert(
+                entry.InstanceId.Contains('\\'),
+                $"{entry.Name} has no bus-qualified instance identifier");
+
+            Assert(DeviceClassPolicy.FindClassViolation(entry.DeviceClass) is null,
+                $"{entry.Name} is in class {entry.DeviceClass}, which the policy refuses");
+        }
+
+        foreach (var card in devices)
+        {
+            var instanceId = card.Definition.Id["DEVICE-".Length..];
+            var entry = context.Devices.Devices.FirstOrDefault(device => device.InstanceId == instanceId);
+            if (entry is null)
+            {
+                continue;
+            }
+
+            // The invariant that stops this disconnecting someone: anything carrying work is never
+            // offered, whatever its class says.
+            if (entry.InUse)
+            {
+                AssertEqual(0, card.Plan.Count, $"{entry.Name} is in use and must not offer a write");
+                Assert(!card.CanApply, $"{entry.Name} is in use and must not be applicable");
+            }
+
+            foreach (var plan in card.Plan)
+            {
+                AssertEqual(MutationKind.DeviceState, plan.Kind, "a device card must plan a device change");
+                Assert(MutationAllowlist.FindViolation(plan) is null,
+                    $"{entry.Name} plans a change the allowlist refuses");
+            }
+        }
+    }
+
+    /// <summary>
+    /// The claim the whole cross-machine feature rests on: a snapshot answers the catalogue exactly
+    /// as the machine would have. If serialization drops one field of the context, or one recorded
+    /// read, the reviewing machine quietly reaches a different verdict — and the person acting on it
+    /// has no way to tell. So this compares every card, not a summary count.
+    /// </summary>
+    private static async Task TestSnapshotRoundTripAsync()
+    {
+        var snapshot = await MachineSnapshotCollector.CollectAsync(measureInput: false, TimeSpan.Zero);
+
+        var live = ExpertTweakCatalog.Evaluate(snapshot.Context, new WindowsMutationExecutor());
+        Assert(live.Count > 0, "the catalogue produced no cards to compare");
+
+        var path = Path.Combine(
+            Path.GetTempPath(), $"fpl-{Guid.NewGuid():N}{MachineSnapshotStore.SnapshotExtension}");
+        try
+        {
+            MachineSnapshotStore.WriteSnapshot(path, snapshot);
+            var reloaded = MachineSnapshotStore.ReadSnapshot(path);
+
+            AssertEqual(snapshot.Identity.Fingerprint, reloaded.Identity.Fingerprint,
+                "the machine fingerprint did not survive the file");
+            AssertEqual(snapshot.Reads.Count, reloaded.Reads.Count,
+                "recorded reads were lost writing the snapshot out");
+
+            var replayed = ExpertTweakCatalog.Evaluate(
+                reloaded.Context, new ReplayStateReader(reloaded.Reads));
+
+            AssertEqual(live.Count, replayed.Count, "the reloaded snapshot produced a different card count");
+
+            var liveById = live.ToDictionary(card => card.Definition.Id, StringComparer.Ordinal);
+            foreach (var card in replayed)
+            {
+                Assert(liveById.TryGetValue(card.Definition.Id, out var original),
+                    $"{card.Definition.Id} exists only after the round trip");
+
+                AssertEqual(original!.Reading.State, card.Reading.State,
+                    $"{card.Definition.Id} reads differently from a snapshot");
+                AssertEqual(original.Reading.CurrentValue, card.Reading.CurrentValue,
+                    $"{card.Definition.Id} reports a different current value from a snapshot");
+                AssertEqual(original.Plan.Count, card.Plan.Count,
+                    $"{card.Definition.Id} plans a different number of writes from a snapshot");
+                AssertEqual(original.CanApply, card.CanApply,
+                    $"{card.Definition.Id} differs on whether it can be applied");
+            }
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch (IOException)
+            {
+                // A leftover temp file is not a test failure.
+            }
+        }
+    }
+
+    /// <summary>
+    /// A plan file is data that an elevated process on another machine reads. If it carried the
+    /// writes themselves it would be a command channel into that process — the same hole the
+    /// allowlist exists to close. This asserts the format stays incapable of expressing a write.
+    /// </summary>
+    private static async Task TestPlanCarriesNoMutationsAsync()
+    {
+        var snapshot = await MachineSnapshotCollector.CollectAsync(measureInput: false, TimeSpan.Zero);
+        var review = RemoteMachineReview.Review(snapshot);
+        var applicable = review.Cards.Where(card => card.CanApply).Take(5).ToArray();
+        if (applicable.Length == 0)
+        {
+            return;
+        }
+
+        var plan = RemoteMachineReview.BuildPlan(snapshot, applicable, "test");
+        AssertEqual(applicable.Length, plan.TweakIds.Count, "the plan lost a selected tweak");
+
+        var path = Path.Combine(
+            Path.GetTempPath(), $"fpl-{Guid.NewGuid():N}{MachineSnapshotStore.PlanExtension}");
+        try
+        {
+            MachineSnapshotStore.WritePlan(path, plan);
+            var text = File.ReadAllText(path);
+
+            foreach (var mutation in applicable.SelectMany(card => card.Plan))
+            {
+                Assert(!text.Contains(mutation.Target, StringComparison.OrdinalIgnoreCase),
+                    $"the plan file leaked a write target: {mutation.Target}");
+            }
+
+            Assert(!text.Contains("HKEY", StringComparison.OrdinalIgnoreCase),
+                "the plan file contains a registry path");
+
+            foreach (var id in plan.TweakIds)
+            {
+                Assert(text.Contains(id, StringComparison.Ordinal), $"the plan file lost {id}");
+            }
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch (IOException)
+            {
+                // Ignored, as above.
+            }
+        }
+    }
+
+    private static Task TestPlanTargetMismatchAsync()
+    {
+        var here = new MachineIdentity(
+            "THIS-PC",
+            MachineSnapshotStore.Fingerprint("THIS-PC", "Some CPU", 8, 16, 34_359_738_368),
+            "Some CPU", 8, 16, 34_359_738_368, "10.0.26200", "Some GPU");
+
+        var elsewhere = here with
+        {
+            MachineName = "GAMING-PC",
+            Fingerprint = MachineSnapshotStore.Fingerprint(
+                "GAMING-PC", "AMD Ryzen 7 5800X3D", 8, 16, 34_359_738_368),
+            ProcessorBrand = "AMD Ryzen 7 5800X3D"
+        };
+
+        var plan = new TweakPlanFile(
+            TweakPlanFile.CurrentFormatVersion, DateTimeOffset.UtcNow, elsewhere, ["GAMEDVR-001"], "test");
+
+        Assert(RemoteMachineReview.FindTargetMismatch(plan, here) is not null,
+            "a plan for a different machine must be refused");
+        Assert(RemoteMachineReview.FindTargetMismatch(plan, elsewhere) is null,
+            "a plan for this machine must be accepted");
+
+        // The same box read twice must fingerprint the same, or every plan would be refused.
+        AssertEqual(
+            MachineSnapshotStore.Fingerprint("gaming-pc", "AMD Ryzen 7 5800X3D", 8, 16, 34_359_738_368),
+            elsewhere.Fingerprint,
+            "the fingerprint must not depend on the case of the machine name");
+
+        // Reported physical memory wobbles by a few megabytes between boots, and a fingerprint that
+        // moved with it would refuse every plan the day after it was written.
+        AssertEqual(
+            MachineSnapshotStore.Fingerprint(
+                "GAMING-PC", "AMD Ryzen 7 5800X3D", 8, 16, 34_359_738_368 - 200_000_000),
+            elsewhere.Fingerprint,
+            "the fingerprint must tolerate small differences in reported memory");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestReplayOfUnknownKeyAsync()
+    {
+        var reader = new ReplayStateReader([new RecordedRead("RegistryValue|A|B", true, "1")]);
+        var known = new MutationPlan("m1", MutationKind.RegistryValue, "A", "B", "0", "DWord", "known");
+        var unknown = new MutationPlan("m2", MutationKind.RegistryValue, "C", "D", "0", "DWord", "unknown");
+
+        Assert(reader.Read(known, out var knownExists) == "1", "a recorded read must replay its value");
+        Assert(knownExists, "a recorded read must replay as present");
+
+        // Not knowing must present as absent rather than as a default, so the card degrades to
+        // unreadable and offers no write. Guessing here would invent state for a machine that is
+        // not even switched on.
+        Assert(reader.Read(unknown, out var unknownExists) is null, "an unrecorded read must be null");
+        Assert(!unknownExists, "an unrecorded read must report the surface as absent");
+        return Task.CompletedTask;
     }
 
     private sealed class CountingReader(ITweakStateReader inner) : ITweakStateReader

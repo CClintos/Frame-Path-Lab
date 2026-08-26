@@ -148,6 +148,10 @@ public static class MutationAllowlist
             MutationKind.PowerSchemeValue => CheckPowerSetting(target),
             MutationKind.PowerOverlayScheme => null,
 
+            // The class travels in the value name so the guard can check it without needing to
+            // re-enumerate hardware, which a restore replayed from the ledger cannot rely on doing.
+            MutationKind.DeviceState => DeviceClassPolicy.FindClassViolation(valueName),
+
             // Nothing reaches into a running process, and boot configuration is never written.
             MutationKind.ProcessAffinity or MutationKind.ProcessPriority
                 or MutationKind.ProcessPowerThrottling =>

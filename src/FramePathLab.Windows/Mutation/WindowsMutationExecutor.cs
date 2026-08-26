@@ -41,6 +41,8 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
             case MutationKind.ProcessPowerThrottling:
                 exists = false;
                 return null;
+            case MutationKind.DeviceState:
+                return ReadDeviceState(plan, out exists);
             case MutationKind.BootConfigurationValue:
             default:
                 exists = false;
@@ -191,6 +193,7 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
         return plan.Kind switch
         {
             MutationKind.RegistryValue => plan.Target.StartsWith("HKLM", StringComparison.OrdinalIgnoreCase),
+            MutationKind.DeviceState => true,
             MutationKind.BootConfigurationValue => true,
             _ => false
         };
@@ -499,6 +502,49 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
         if (status != 0)
         {
             throw new InvalidOperationException($"Power mode overlay write failed with status {status}.");
+        }
+    }
+
+    // ---- Devices --------------------------------------------------------------------------
+
+    private static string? ReadDeviceState(MutationPlan plan, out bool exists)
+    {
+        if (DeviceInterop.CM_Locate_DevNodeW(out var devInst, plan.Target, 0) != DeviceInterop.CrSuccess)
+        {
+            exists = false;
+            return null;
+        }
+
+        if (DeviceInterop.CM_Get_DevNode_Status(out var status, out var problem, devInst, 0)
+            != DeviceInterop.CrSuccess)
+        {
+            exists = false;
+            return null;
+        }
+
+        exists = true;
+        var disabled = (status & DeviceInterop.DnHasProblem) != 0
+                       && problem == DeviceInterop.ProblemDisabled;
+        return disabled ? "disabled" : "enabled";
+    }
+
+    private static void WriteDeviceState(MutationPlan plan, string value)
+    {
+        if (DeviceInterop.CM_Locate_DevNodeW(out var devInst, plan.Target, 0) != DeviceInterop.CrSuccess)
+        {
+            throw new InvalidOperationException($"Device '{plan.Target}' could not be located.");
+        }
+
+        // Flags stay zero deliberately, so the disable does not persist across a restart. A wrong
+        // call costs a reboot rather than the use of the machine.
+        var result = value.Equals("disabled", StringComparison.OrdinalIgnoreCase)
+            ? DeviceInterop.CM_Disable_DevNode(devInst, 0)
+            : DeviceInterop.CM_Enable_DevNode(devInst, 0);
+
+        if (result != DeviceInterop.CrSuccess)
+        {
+            throw new InvalidOperationException(
+                $"The device state could not be changed (configuration manager result {result}).");
         }
     }
 

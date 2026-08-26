@@ -133,6 +133,16 @@ public static class ExpertTweakPolicy
                 + "modern part this frequently costs more than it saves. Measure both states.");
         }
 
+        if (HasPrefix(id, "DEVICE-"))
+        {
+            return (TweakDisposition.OptInExperiment,
+                "Experiment, and one the community oversells. Disabling a device does remove its "
+                + "interrupt and deferred-call activity, but most idle devices were generating almost "
+                + "none to remove. The candidates worth the time are drivers that stay busy with "
+                + "nothing attached. The disable does not persist across a restart, so a wrong call "
+                + "costs a reboot — which makes this cheap to test and not worth guessing at.");
+        }
+
         if (HasPrefix(id, "SERVICE-"))
         {
             return (TweakDisposition.OptInExperiment,

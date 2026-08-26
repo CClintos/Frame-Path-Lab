@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using FramePathLab.Core.Abstractions;
 using FramePathLab.Core.Models;
+using FramePathLab.Core.Persistence;
 using FramePathLab.Core.Reporting;
 using FramePathLab.Core.Services;
 using FramePathLab.Windows.Scanning;
@@ -21,6 +22,8 @@ public sealed class MainViewModel : ObservableObject
     private readonly ExpertScanCoordinator _expertScanCoordinator;
     private readonly long _processStartTimeUtcTicks;
     private ExpertScanContext? _expertContext;
+    private MachineSnapshot? _reviewSnapshot;
+    private string _remoteBanner = string.Empty;
     private string _expertSummary = "Run the expert scan to read CPU topology, display timing, GPU state and input delivery.";
     private string _expertHardware = "Not scanned";
     private CpuTuningDisplay? _cpuTuning;
@@ -81,6 +84,12 @@ public sealed class MainViewModel : ObservableObject
         DeleteHistoryCommand = new AsyncRelayCommand(DeleteHistoryAsync, () => !IsBusy, SetError);
         RefreshHistoryCommand = new AsyncRelayCommand(RefreshHistoryAsync, () => !IsBusy, SetError);
         ExpertScanCommand = new AsyncRelayCommand(ExpertScanAsync, () => !IsBusy, SetError);
+        CollectSnapshotCommand = new AsyncRelayCommand(CollectSnapshotAsync, () => !IsBusy, SetError);
+        OpenSnapshotCommand = new AsyncRelayCommand(OpenSnapshotAsync, () => !IsBusy, SetError);
+        ExportPlanCommand = new AsyncRelayCommand(
+            ExportPlanAsync,
+            () => !IsBusy && IsReviewingRemoteMachine,
+            SetError);
         RevertAllExpertCommand = new AsyncRelayCommand(
             RevertAllExpertAsync,
             () => !IsBusy && ExpertTransactions.Any(entry => entry.CanRevert),
@@ -98,6 +107,27 @@ public sealed class MainViewModel : ObservableObject
     public AsyncRelayCommand ExpertScanCommand { get; }
 
     public AsyncRelayCommand RevertAllExpertCommand { get; }
+
+    public AsyncRelayCommand CollectSnapshotCommand { get; }
+
+    public AsyncRelayCommand OpenSnapshotCommand { get; }
+
+    public AsyncRelayCommand ExportPlanCommand { get; }
+
+    /// <summary>
+    /// True while the expert tab is describing a machine that is not this one.
+    ///
+    /// Everything that writes is disabled in this state. The tab still shows the whole catalogue,
+    /// because reading it is the entire purpose — but a change chosen here leaves as a file rather
+    /// than as a write.
+    /// </summary>
+    public bool IsReviewingRemoteMachine => _reviewSnapshot is not null;
+
+    public string RemoteBanner
+    {
+        get => _remoteBanner;
+        private set => SetProperty(ref _remoteBanner, value);
+    }
 
     public string ExpertSummary
     {
@@ -133,6 +163,8 @@ public sealed class MainViewModel : ObservableObject
 
     private async Task ExpertScanAsync()
     {
+        // Scanning is always of this machine, so it is also how you get back out of review mode.
+        LeaveReviewMode();
         IsBusy = true;
         StatusText = MeasureInput
             ? "Reading expert-tier state. Keep moving the mouse for the input measurement…"
@@ -162,11 +194,17 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
-        var cards = _expertEngine.Evaluate(_expertContext);
+        // In review mode the cards come from the snapshot's own recorded reads rather than from
+        // this machine, and the engine — which is the only thing that can write — is not consulted.
+        var remote = IsReviewingRemoteMachine;
+        var cards = remote
+            ? RemoteMachineReview.Review(_reviewSnapshot!).Cards
+            : _expertEngine.Evaluate(_expertContext);
+
         ExpertTweaks.Clear();
         foreach (var card in cards)
         {
-            ExpertTweaks.Add(new ExpertTweakDisplay(card));
+            ExpertTweaks.Add(new ExpertTweakDisplay(card) { IsRemoteReview = remote });
         }
 
         var available = cards.Count(card => card.CanApply);
@@ -220,6 +258,15 @@ public sealed class MainViewModel : ObservableObject
     public async Task ApplyExpertTweakAsync(ExpertTweakDisplay display)
     {
         ArgumentNullException.ThrowIfNull(display);
+        if (IsReviewingRemoteMachine)
+        {
+            // Belt and braces. The button is hidden in this mode, but the one mistake this feature
+            // could make that actually costs something is writing to the machine being sat at
+            // instead of the one being looked at, so it is refused here as well.
+            StatusText = "This is a snapshot of another machine. Export a plan and run it there.";
+            return;
+        }
+
         IsBusy = true;
         StatusText = $"Applying {display.Title} and recording the exact prior value…";
         try
@@ -259,6 +306,141 @@ public sealed class MainViewModel : ObservableObject
         {
             IsBusy = false;
         }
+    }
+
+    // ---- other machines ------------------------------------------------------------------------
+
+    /// <summary>Writes a portable reading of this machine for review somewhere else.</summary>
+    private async Task CollectSnapshotAsync()
+    {
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "Save a snapshot of this machine",
+            FileName = $"{System.Environment.MachineName}-{DateTimeOffset.Now:yyyyMMdd-HHmm}"
+                       + MachineSnapshotStore.SnapshotExtension,
+            Filter = $"FramePath Lab snapshot (*{MachineSnapshotStore.SnapshotExtension})"
+                     + $"|*{MachineSnapshotStore.SnapshotExtension}"
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        IsBusy = true;
+        StatusText = "Reading this machine into a portable snapshot…";
+        try
+        {
+            var snapshot = await MachineSnapshotCollector.CollectAsync(MeasureInput, TimeSpan.FromSeconds(5));
+            await Task.Run(() => MachineSnapshotStore.WriteSnapshot(dialog.FileName, snapshot));
+            StatusText = $"Snapshot of {snapshot.Identity.MachineName} written to {dialog.FileName}. "
+                         + "Open it on any machine to review what this one needs.";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    /// <summary>Loads a machine collected elsewhere and shows the catalogue against it, read-only.</summary>
+    private async Task OpenSnapshotAsync()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Open a snapshot collected on another machine",
+            CheckFileExists = true,
+            Filter = $"FramePath Lab snapshot (*{MachineSnapshotStore.SnapshotExtension})"
+                     + $"|*{MachineSnapshotStore.SnapshotExtension}|All files|*.*"
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        IsBusy = true;
+        StatusText = "Loading snapshot…";
+        try
+        {
+            var snapshot = await Task.Run(() => MachineSnapshotStore.ReadSnapshot(dialog.FileName));
+            _reviewSnapshot = snapshot;
+            _expertContext = snapshot.Context;
+
+            var review = RemoteMachineReview.Review(snapshot);
+            RemoteBanner = $"Reviewing {snapshot.Identity.Describe()} — collected "
+                           + $"{snapshot.CapturedUtc.ToLocalTime():g}"
+                           + (snapshot.CollectedElevated
+                               ? "."
+                               : ", WITHOUT administrator rights, so machine-scope items read as unknown.");
+            OnPropertyChanged(nameof(IsReviewingRemoteMachine));
+            ExportPlanCommand.RaiseCanExecuteChanged();
+            RebuildExpertCards();
+            StatusText = review.Summary;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// Writes the ticked changes out as a plan for the machine they were chosen for.
+    ///
+    /// The file carries identifiers only, so it is not a script and cannot be turned into one. The
+    /// target re-derives every write from its own catalogue and its own fresh scan.
+    /// </summary>
+    private Task ExportPlanAsync()
+    {
+        if (_reviewSnapshot is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        var chosen = ExpertTweaks.Where(display => display.IsSelected).Select(display => display.Card).ToArray();
+        if (chosen.Length == 0)
+        {
+            StatusText = "Nothing is ticked. Select the changes you want before exporting a plan.";
+            return Task.CompletedTask;
+        }
+
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = $"Save a plan for {_reviewSnapshot.Identity.MachineName}",
+            FileName = $"{_reviewSnapshot.Identity.MachineName}-{DateTimeOffset.Now:yyyyMMdd-HHmm}"
+                       + MachineSnapshotStore.PlanExtension,
+            Filter = $"FramePath Lab plan (*{MachineSnapshotStore.PlanExtension})"
+                     + $"|*{MachineSnapshotStore.PlanExtension}"
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return Task.CompletedTask;
+        }
+
+        var plan = RemoteMachineReview.BuildPlan(
+            _reviewSnapshot,
+            chosen,
+            $"Chosen on {System.Environment.MachineName} against a snapshot taken "
+            + $"{_reviewSnapshot.CapturedUtc.ToLocalTime():g}.");
+
+        MachineSnapshotStore.WritePlan(dialog.FileName, plan);
+        StatusText = $"{plan.TweakIds.Count} change(s) written to {dialog.FileName}. On "
+                     + $"{_reviewSnapshot.Identity.MachineName}, run:  FramePathLab.exe --apply "
+                     + Path.GetFileName(dialog.FileName);
+        return Task.CompletedTask;
+    }
+
+    private void LeaveReviewMode()
+    {
+        if (_reviewSnapshot is null)
+        {
+            return;
+        }
+
+        _reviewSnapshot = null;
+        RemoteBanner = string.Empty;
+        OnPropertyChanged(nameof(IsReviewingRemoteMachine));
+        ExportPlanCommand.RaiseCanExecuteChanged();
     }
 
     private async Task RefreshExpertContextAfterMutationAsync()

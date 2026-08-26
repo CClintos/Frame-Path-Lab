@@ -20,6 +20,15 @@ public partial class App : Application
             return;
         }
 
+        // Collecting from, and applying to, a machine other than the one being sat at. Both run
+        // without the window so the target only ever needs one command.
+        if (PortableCommandLine.Handles(e.Args))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            Shutdown(PortableCommandLine.Run(e.Args));
+            return;
+        }
+
         DispatcherUnhandledException += HandleUnhandledException;
         ShutdownMode = ShutdownMode.OnMainWindowClose;
         var window = new MainWindow();
