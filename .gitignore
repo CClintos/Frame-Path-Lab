@@ -7,3 +7,5 @@ work/
 outputs/FramePathLab-v*-win-x64-unsigned/
 outputs/*.zip
 outputs/New folder/
+
+dist/
