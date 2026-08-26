@@ -8,6 +8,7 @@ using FramePathLab.Core.Models;
 using FramePathLab.Core.Persistence;
 using FramePathLab.Core.Reporting;
 using FramePathLab.Core.Services;
+using FramePathLab.Windows.Benchmark;
 using FramePathLab.Windows.Mutation;
 using FramePathLab.Windows.Scanning;
 
@@ -43,6 +44,8 @@ internal static class Program
                 "expert-verify" => await ExpertVerifyAsync(args),
                 "expert-revert" => await ExpertRevertAsync(args),
                 "expert-history" => ExpertHistory(),
+                "benchmark" => Benchmark(args),
+                "autotune" => await AutoTuneAsync(args),
                 _ => UnknownCommand(args[0])
             };
         }
@@ -283,6 +286,57 @@ internal static class Program
         return Task.FromResult(transaction.State == TweakTransaction.StateReverted ? 0 : 1);
     }
 
+    private static async Task<int> AutoTuneAsync(string[] args)
+    {
+        var level = args.Contains("--aggressive", StringComparer.OrdinalIgnoreCase)
+            ? AutoTuneLevel.Aggressive
+            : args.Contains("--conservative", StringComparer.OrdinalIgnoreCase)
+                ? AutoTuneLevel.Conservative
+                : AutoTuneLevel.Balanced;
+
+        var mode = args.Contains("--isolate", StringComparer.OrdinalIgnoreCase)
+            ? AutoTuneMode.Isolate
+            : AutoTuneMode.Bundle;
+
+        var engine = BuildEngine();
+        var context = await BuildContextAsync(measureInput: false);
+        var cards = engine.Evaluate(context);
+
+        var candidates = AutoTuneCoordinator.SelectCandidates(cards, level);
+        Console.Error.WriteLine(
+            $"Level {level}, mode {mode}: {candidates.Count} candidate(s).");
+        if (mode == AutoTuneMode.Isolate && candidates.Count > 0)
+        {
+            Console.Error.WriteLine(
+                $"Isolate mode measures each change separately: {candidates.Count + 1} benchmark runs.");
+        }
+
+        var progress = new Progress<string>(message => Console.Error.WriteLine($"  {message}"));
+        var coordinator = new AutoTuneCoordinator(engine, new SyntheticBenchmarkRunner());
+        var report = coordinator.Run(cards, level, mode, progress);
+
+        Console.WriteLine(JsonSerializer.Serialize(report, JsonOptions));
+        return report.Applied > 0 || report.CandidatesConsidered == 0 ? 0 : 1;
+    }
+
+    private static int Benchmark(string[] args)
+    {
+        var quick = args.Contains("--quick", StringComparer.OrdinalIgnoreCase);
+        var options = quick ? BenchmarkOptions.Quick : BenchmarkOptions.Default;
+        Console.Error.WriteLine($"Running a {options.TotalDuration.TotalSeconds:0} second benchmark...");
+
+        var result = new SyntheticBenchmark().Run(options);
+        if (!result.Succeeded)
+        {
+            Console.Error.WriteLine(result.Observation);
+            return 1;
+        }
+
+        var analysis = BenchmarkAnalysis.ToAnalysis(result, quick ? "benchmark-quick" : "benchmark");
+        Console.WriteLine(JsonSerializer.Serialize(analysis, JsonOptions));
+        return 0;
+    }
+
     private static int ExpertHistory()
     {
         Console.WriteLine(JsonSerializer.Serialize(BuildEngine().AllTransactions(), JsonOptions));
@@ -307,6 +361,9 @@ internal static class Program
         Console.WriteLine("  expert-apply-all               apply every recommended default this PC needs");
         Console.WriteLine("  expert-revert <id|all>         undo a recorded transaction");
         Console.WriteLine("  expert-history                 list every recorded transaction");
+        Console.WriteLine("  benchmark [--quick]            run the self-contained frame benchmark");
+        Console.WriteLine("  autotune [--conservative|--aggressive] [--isolate]");
+        Console.WriteLine("                                 measure, apply, re-measure, keep what earned it");
         Console.WriteLine("  expert-verify <id|any> <before.csv> <after.csv> [--revert-on-failure]");
         Console.WriteLine("                                 measure a change against two captures");
     }

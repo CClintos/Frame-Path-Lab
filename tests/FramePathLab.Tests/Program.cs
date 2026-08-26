@@ -67,7 +67,10 @@ internal static class Program
         ("Verifier refuses incomparable captures", TestVerifierRefusesMismatchAsync),
         ("Hardware error history reads without throwing", TestHardwareErrorScanAsync),
         ("CPU tuning plan orders the boost region before all-core", TestCpuTuningPlanAsync),
-        ("Stacked-cache parts report locked boost controls", TestCpuTuningStackedCacheAsync)
+        ("Stacked-cache parts report locked boost controls", TestCpuTuningStackedCacheAsync),
+        ("Autotune levels widen without ever including excluded work", TestAutoTuneLevelsAsync),
+        ("Autotune reverts a regression instead of keeping it", TestAutoTuneRevertsRegressionAsync),
+        ("Autotune never keeps a change it could not measure", TestAutoTuneRefusesUnmeasuredAsync)
     ];
 
     public static async Task<int> Main()
@@ -1618,6 +1621,130 @@ internal static class Program
             uptimeSeconds: 3600);
         Assert(!conventional.MultiplierLocked, "a conventional part must not report a locked multiplier");
         return Task.CompletedTask;
+    }
+
+    /// <summary>Returns a scripted sequence of measurements so a whole run is deterministic.</summary>
+    private sealed class ScriptedBenchmark(params CaptureAnalysis[] results) : IBenchmarkRunner
+    {
+        private int _index;
+
+        public int Runs => _index;
+
+        public CaptureAnalysis Run(CancellationToken cancellationToken = default)
+            => results[Math.Min(_index++, results.Length - 1)];
+    }
+
+    private static ExpertTweakCard BuildAutoTuneCard(string id, TweakDisposition disposition, TweakRisk risk)
+    {
+        var card = BuildTestCard(id, [TestRegistryPlan(id.Replace("-", string.Empty, StringComparison.Ordinal), "1")]);
+        return card with
+        {
+            Definition = card.Definition with { Disposition = disposition, Risk = risk }
+        };
+    }
+
+    private static Task TestAutoTuneLevelsAsync()
+    {
+        var cards = new[]
+        {
+            BuildAutoTuneCard("AT-DEFAULT", TweakDisposition.RecommendDefault, TweakRisk.Low),
+            BuildAutoTuneCard("AT-EXPERIMENT", TweakDisposition.OptInExperiment, TweakRisk.Moderate),
+            BuildAutoTuneCard("AT-RISKY", TweakDisposition.OptInExperiment, TweakRisk.High),
+            BuildAutoTuneCard("AT-GUIDED", TweakDisposition.GuidedAction, TweakRisk.Low),
+            BuildAutoTuneCard("AT-EXCLUDED", TweakDisposition.Excluded, TweakRisk.Low)
+        };
+
+        var conservative = AutoTuneCoordinator.SelectCandidates(cards, AutoTuneLevel.Conservative);
+        var balanced = AutoTuneCoordinator.SelectCandidates(cards, AutoTuneLevel.Balanced);
+        var aggressive = AutoTuneCoordinator.SelectCandidates(cards, AutoTuneLevel.Aggressive);
+
+        AssertEqual(1, conservative.Count, "conservative takes defaults only");
+        AssertEqual(2, balanced.Count, "balanced adds bounded experiments but not high-risk ones");
+        AssertEqual(3, aggressive.Count, "aggressive adds the high-risk experiment");
+
+        // The levels widen, but no level may ever reach something policy refuses to write.
+        foreach (var selection in (IReadOnlyList<ExpertTweakCard>[])[conservative, balanced, aggressive])
+        {
+            foreach (var card in selection)
+            {
+                Assert(ExpertTweakPolicy.IsWritable(card.Definition.Disposition),
+                    $"{card.Definition.Id} is not writable and must never be a candidate");
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static async Task TestAutoTuneRevertsRegressionAsync()
+    {
+        ClearTestRegistry();
+        try
+        {
+            await WithTemporaryDirectoryAsync(directory =>
+            {
+                var journal = new TweakJournalStore(directory);
+                var engine = new ExpertTweakEngine(
+                    new WindowsMutationExecutor(), journal, isElevated: false, new ScratchGuard());
+
+                // Tails materially worse, average flat — the case a mean-based judgement misses.
+                var benchmark = new ScriptedBenchmark(
+                    BuildAnalysis("baseline.csv", 4.000, 6.000, 0.500, 250),
+                    BuildAnalysis("after.csv", 3.980, 7.400, 0.760, 251));
+
+                var card = BuildAutoTuneCard("AT-REGRESS", TweakDisposition.RecommendDefault, TweakRisk.Low);
+                var report = new AutoTuneCoordinator(engine, benchmark)
+                    .Run([card], AutoTuneLevel.Conservative, AutoTuneMode.Isolate);
+
+                AssertEqual(1, report.Applied, "the candidate should have been applied");
+                AssertEqual(0, report.Kept, "a tail regression must not be kept");
+                AssertEqual(1, report.Reverted, "a tail regression must be reverted");
+
+                new WindowsMutationExecutor().Read(TestRegistryPlan("ATREGRESS", "0"), out var exists);
+                Assert(!exists, "the reverted change must be gone from the machine");
+                return Task.CompletedTask;
+            });
+        }
+        finally
+        {
+            ClearTestRegistry();
+        }
+    }
+
+    private static async Task TestAutoTuneRefusesUnmeasuredAsync()
+    {
+        ClearTestRegistry();
+        try
+        {
+            await WithTemporaryDirectoryAsync(directory =>
+            {
+                var journal = new TweakJournalStore(directory);
+                var engine = new ExpertTweakEngine(
+                    new WindowsMutationExecutor(), journal, isElevated: false, new ScratchGuard());
+
+                // Too few frames to compare. This must not read as a pass — keeping a change
+                // because the measurement failed is exactly the behaviour the tool exists to avoid.
+                var benchmark = new ScriptedBenchmark(
+                    BuildAnalysis("baseline.csv", 4.0, 6.0, 0.5, 250, frames: 100),
+                    BuildAnalysis("after.csv", 3.5, 5.0, 0.4, 285, frames: 100));
+
+                var card = BuildAutoTuneCard("AT-UNMEASURED", TweakDisposition.RecommendDefault, TweakRisk.Low);
+                var report = new AutoTuneCoordinator(engine, benchmark)
+                    .Run([card], AutoTuneLevel.Conservative, AutoTuneMode.Isolate);
+
+                AssertEqual(0, report.Kept, "an unmeasurable result must never be kept");
+
+                new WindowsMutationExecutor().Read(TestRegistryPlan("ATUNMEASURED", "0"), out var exists);
+                Assert(!exists, "an unmeasured change must be reversed off the machine");
+                Assert(
+                    report.Steps.Any(step => step.Outcome.Contains("not measured", StringComparison.OrdinalIgnoreCase)),
+                    "the report must say the change was not measured rather than implying it passed");
+                return Task.CompletedTask;
+            });
+        }
+        finally
+        {
+            ClearTestRegistry();
+        }
     }
 
     private sealed class CountingReader(ITweakStateReader inner) : ITweakStateReader

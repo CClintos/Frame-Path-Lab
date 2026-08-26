@@ -95,6 +95,34 @@ Movement smaller than run-to-run noise reports as **no measured change** rather 
 
 ---
 
+## Autotune
+
+One command: measure, apply, measure again, keep what earned its place and reverse what did not.
+
+```powershell
+.\work\dotnet\dotnet.exe run --project .	ools\FramePathLab.Cli\FramePathLab.Cli.csproj -- autotune --balanced --isolate
+```
+
+Three levels — `--conservative` (recommended defaults only), `--balanced` (adds bounded experiments), `--aggressive` (everything policy permits writing). No level can reach something the policy refuses to write.
+
+Two modes. `--bundle` applies everything and measures once: fast, and answers "was this set worth it" — but cannot say which member did the work. `--isolate` measures one change per pair, which is the only way to attribute a result, at the cost of one benchmark run per candidate.
+
+**Nothing is kept on the catalogue's own opinion.** A change is applied because policy permits writing it, and retained only because the measurement afterwards supports it. A change that could not be measured is reversed and reported as unmeasured — never counted as a pass, because "we applied it and couldn't tell" is precisely the failure this tool exists to avoid.
+
+### The benchmark it runs
+
+The app renders its own, so nothing external is needed and there is no capture to lose.
+
+It presents through a real DXGI flip-model swap chain — **the same path a modern game uses** — so present-path changes actually register. An OpenGL timedemo cannot answer that, and it reports average throughput, which is the metric that hides the problem.
+
+The frame is shaped like a shooter's rather than like a throughput loop: a **pointer chase over a 32 MiB working set**, where each step's address comes from the previous step's value. That work is bound by memory latency, not arithmetic, which is why cache capacity moves it — and why a processor carrying stacked cache pulls ahead here the same way it does in a real title. A tight loop over a cache-resident array would never miss, so it would report cache and memory changes as doing nothing. Part of the work is dispatched across threads so core availability and scheduling policy register the way an engine's job system would.
+
+The workload is **fixed, not calibrated**. A benchmark that adjusts its work until every machine reports the same frame time cannot compare machines — and worse, it would quietly compensate for a change that made the processor slower. Runs continue until enough frames exist to compare, so a slow machine takes longer rather than producing a result too short to use.
+
+Measured repeatability on an idle machine: P99 spread **0.5%**, median **1.8%** — below the 2% noise band, which is what makes a real difference attributable.
+
+It is a proxy, not the game. It exercises the presentation path, the scheduler, memory latency and power behaviour faithfully, because those are shared. It does not reproduce draw-call submission overhead. Anything that turns on engine specifics still gets confirmed against a real capture.
+
 ## CPU & platform
 
 A dedicated view for the firmware-level tuning this app deliberately doesn't write.
