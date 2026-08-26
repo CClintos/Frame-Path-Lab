@@ -196,4 +196,15 @@ public sealed record ExpertScanContext(
     long PerformanceCounterFrequency,
     bool? GpuMessageSignalledInterrupts,
     string? GpuInterruptRegistryPath,
-    string GpuInterruptObservation);
+    string GpuInterruptObservation,
+    AudioState Audio,
+    NetworkPathQuality NetworkPath,
+    PanelIdentity Panel,
+    NvidiaProfileState NvidiaProfile,
+    bool? FastStartupEnabled,
+    bool HasInterruptAffinityPolicy,
+    string InterruptAffinityObservation,
+    bool DefenderExclusionsReadable,
+    IReadOnlyList<string> DefenderExclusions,
+    string DefenderObservation,
+    bool OverlayProcessObserved);

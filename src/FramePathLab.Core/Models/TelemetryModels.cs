@@ -202,6 +202,84 @@ public sealed record SteamActivity(
     IReadOnlyList<string> ActiveDownloads,
     string Observation);
 
+/// <summary>
+/// The shared-mode format Windows mixes to for one render endpoint, plus the processing that sits
+/// between the engine and the transducer.
+/// </summary>
+public sealed record AudioEndpointState(
+    string FriendlyName,
+    bool IsDefault,
+    int SampleRateHz,
+    int BitsPerSample,
+    int Channels,
+    bool? EnhancementsDisabled,
+    bool? ExclusiveModeAllowed,
+    string Observation)
+{
+    /// <summary>
+    /// Game engines author and mix at 48 kHz. A shared-mode format at any other rate forces the
+    /// audio engine to resample every buffer, which adds processing and can smear transient
+    /// detail — the exact cue a footstep is localised from.
+    /// </summary>
+    public bool IsResampling => SampleRateHz > 0 && SampleRateHz != 48000;
+
+    /// <summary>
+    /// More than two channels on a headset endpoint means a virtual-surround renderer is folding a
+    /// multichannel bed down to two ears, which is a second spatial model layered on the engine's.
+    /// </summary>
+    public bool IsMultichannel => Channels > 2;
+}
+
+public sealed record AudioState(
+    bool Available,
+    IReadOnlyList<AudioEndpointState> Endpoints,
+    IReadOnlyList<string> SpatialProviders,
+    string Observation)
+{
+    public AudioEndpointState? Default => Endpoints.FirstOrDefault(endpoint => endpoint.IsDefault)
+                                          ?? Endpoints.FirstOrDefault();
+}
+
+/// <summary>Measured quality of the first network hops, not of the game route.</summary>
+public sealed record NetworkPathQuality(
+    bool Measured,
+    string Target,
+    int Sent,
+    int Received,
+    double MedianRttMs,
+    double JitterMs,
+    double P99RttMs,
+    double WorstRttMs,
+    string Observation)
+{
+    public double LossPercent => Sent == 0 ? 0 : 100d * (Sent - Received) / Sent;
+
+    /// <summary>
+    /// Jitter on the local hop is what a wireless link, a failing cable or a congested uplink looks
+    /// like. It moves tick delivery, which players experience as inconsistent registration.
+    /// </summary>
+    public bool IsUnstable => Measured && (JitterMs > 2.0 || LossPercent > 0.5);
+}
+
+/// <summary>Panel capability read from EDID, which is the panel's own description of itself.</summary>
+public sealed record PanelIdentity(
+    bool Available,
+    string ManufacturerCode,
+    string ProductName,
+    int NativeWidth,
+    int NativeHeight,
+    int MinimumVerticalHz,
+    int MaximumVerticalHz,
+    string Observation);
+
+public sealed record NvidiaProfileSetting(string Name, string Value, string Recommended, bool IsOptimal);
+
+public sealed record NvidiaProfileState(
+    bool Available,
+    string ProfileName,
+    IReadOnlyList<NvidiaProfileSetting> Settings,
+    string Observation);
+
 public sealed record NetworkAdapterState(
     string Name,
     string InterfaceDescription,

@@ -41,6 +41,17 @@ What it measures that the base scan cannot:
 - **Resizable BAR / BAR1 context** without claiming that aperture size proves the driver's per-game Resizable BAR profile is active.
 - **Performance-counter frequency** retained as provenance without claiming that QPC frequency proves a `useplatformclock` boot setting.
 - **Display adapter interrupt mode**, and **Steam transfer in progress**, which is among the most common causes of stutter in an otherwise clean session and is invisible to any settings audit.
+- **Audio-path context** — shared-mode format, endpoint-effects flags, channel count, and possible third-party audio services. These are diagnostic observations: the scan cannot prove the active default endpoint, CS2's source rate, spatial-sound state, or a latency benefit.
+- **Local network path stability** — round-trip time and variation to the default gateway. This can reveal a local Wi-Fi, cable, router, or contention problem; it does not measure the route to a CS2 server or hit registration.
+- **Panel identity from EDID** — native timing and vertical rate range, read from the panel's own description of itself. Windows only enumerates what the current link can carry, so a display running below native reports its reduced ceiling as though it were the panel's; EDID is the independent second opinion.
+- **NVIDIA driver-profile context**, read-only through the vendor interface and loaded from the protected Windows system directory. Values are observations rather than a universal competitive preset; Reflex, VRR, driver version, and bottleneck conditions must be benchmarked.
+- **Fast startup**, which hibernates the kernel session instead of ending it, and **interrupt affinity policy** on the display adapter, reported but never written.
+
+### Checked and excluded
+
+The catalogue also ships entries for changes that are widely recommended and do not survive scrutiny — USB selective suspend for an actively-used mouse, disabling the page file, SysMain and memory compression, turning off simultaneous multithreading, debloat scripts, legacy launch options, and network stack registry packs. Each states why it was rejected.
+
+For someone whose ranking is their income the failure mode is not a missing tweak; it is an endless spiral of applying changes that do nothing and attributing normal variance to them. Saying "this was checked and it does not help, here is why" is worth as much as another setting.
 
 Roughly thirty research candidates span CPU/power policy, timing, GPU/presentation, display, input, background activity, and network context. Unsupported registry writes, security reductions, game-process manipulation, raw NIC/driver changes, MMCSS folklore, and timer myths remain visible as **Excluded** with no Apply plan. The retained power-policy experiments show their literal supported writes before approval.
 
@@ -87,6 +98,8 @@ The application still does not:
 - change firmware, power limits or boot configuration.
 
 **CPU affinity/EcoQoS**, **Memory Integrity disable**, **global timer policy**, **MMCSS task edits**, **Win32PrioritySeparation**, **GPU MSI registry edits**, and raw NIC/driver registry changes are explicitly excluded and have no executable plan.
+
+CPU topology may be reported as context, but the app does not prescribe a launch-time affinity mask or modify a running game. Memory Integrity is reported only; disabling it is neither offered nor recommended.
 
 Imported captures are observational. A single capture cannot produce a causal Keep/Revert decision, and software timing fields are not presented as physical mouse-to-photon latency. Every tweak in the catalogue is an experiment with an uncertain benefit on any particular machine, not a guarantee.
 

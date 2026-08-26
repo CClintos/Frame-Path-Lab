@@ -115,8 +115,20 @@ public static class ExpertTweakCatalog
             ResizableBar(context),
             GpuInterruptMode(context, reader),
             ForcedPlatformClock(context),
-            SteamTransfer(context)
+            SteamTransfer(context),
+            AudioSampleRate(context),
+            AudioSpatialProcessing(context),
+            AudioEffects(context),
+            NetworkPathStability(context),
+            PanelNativeTiming(context),
+            FastStartup(context, reader),
+            InterruptAffinityPolicy(context),
+            DefenderExclusion(context),
+            FrameLimiterStrategy(context)
         };
+
+        cards.AddRange(NvidiaProfileCards(context));
+        cards.AddRange(DebunkRegister());
 
         cards.AddRange(NetworkTweaks(context, reader));
 
@@ -152,14 +164,15 @@ public static class ExpertTweakCatalog
             + "die carrying the large last-level cache, or to the performance-core set, removes cross-die cache "
             + "misses and efficiency-core scheduling excursions. This is the largest single scheduling factor on "
             + "a modern asymmetric desktop CPU.",
-            "Affinity applies to the running process only and is lost when the game restarts. Confining threads "
-            + "reduces total available cores, which can cost throughput in a CPU-saturated workload.",
+            "Applied at launch rather than to a running game. Confining threads reduces total available cores, "
+            + "which can cost throughput in a CPU-saturated workload, and the mask has to be reapplied each time "
+            + "the game starts.",
             TweakRisk.Moderate,
             TweakScope.RunningProcess,
             EvidenceQuality.Strong,
             false,
             false,
-            false,
+            true,
             [MicrosoftAffinity]);
 
         var cpu = context.Cpu;
@@ -1685,6 +1698,562 @@ public static class ExpertTweakCatalog
             [],
             steam.DownloadInProgress ? "Pause the transfer in Steam; this application does not control it." : null);
     }
+
+    // ---- Audio ------------------------------------------------------------------------------
+
+    private static ExpertTweakCard AudioSampleRate(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "AUDIO-FORMAT-001",
+            "Audio",
+            "Shared-mode audio format",
+            "Windows mixes every application to one shared format. When that format does not match the rate the "
+            + "game renders at, the audio engine resamples every buffer on the way out.",
+            "If the game's source rate differs from the shared format, Windows may resample it. This scanner "
+            + "cannot establish CS2's current source rate or prove that a format change improves localisation or latency.",
+            "Changing the endpoint format affects every application using that device.",
+            TweakRisk.Low,
+            TweakScope.CurrentUser,
+            EvidenceQuality.Weak,
+            false,
+            false,
+            false,
+            []);
+
+        var endpoint = context.Audio.Default;
+        if (!context.Audio.Available || endpoint is null)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(TweakState.Unknown, context.Audio.Observation, "48 kHz shared format",
+                    "No active render endpoint reported a readable format."),
+                [],
+                null);
+        }
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                TweakState.Unknown,
+                $"{endpoint.FriendlyName}: {endpoint.SampleRateHz / 1000d:0.###} kHz, {endpoint.BitsPerSample}-bit, "
+                + $"{endpoint.Channels} channel(s)",
+                "No automatic recommendation",
+                "The endpoint format is reported as context. Insufficient evidence exists here to claim that "
+                + "changing it improves CS2 input-to-photon latency or directional accuracy."),
+            [],
+            null);
+    }
+
+    private static ExpertTweakCard AudioSpatialProcessing(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "AUDIO-SPATIAL-001",
+            "Audio",
+            "Layered spatial audio processing",
+            "A modern shooter applies its own head-related transfer function to place a sound around the "
+            + "listener. A virtual-surround renderer applies a second one to whatever it receives.",
+            "Two spatial models in series do not compound into better localisation. The engine's cue and the "
+            + "renderer's cue disagree about phase, and the result is a footstep that is harder to place, not "
+            + "easier. For competitive play the engine should be the only thing doing spatialisation.",
+            "Virtual surround can be preferable for single-player immersion. This is a competitive-play "
+            + "recommendation, not a general one.",
+            TweakRisk.Low,
+            TweakScope.CurrentUser,
+            EvidenceQuality.Moderate,
+            false,
+            false,
+            false,
+            []);
+
+        var endpoint = context.Audio.Default;
+        if (!context.Audio.Available || endpoint is null)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(TweakState.Unknown, context.Audio.Observation, "Engine spatialisation only",
+                    "No active render endpoint was readable."),
+                [],
+                null);
+        }
+
+        var providers = context.Audio.SpatialProviders;
+        var suspect = endpoint.IsMultichannel || providers.Count > 0;
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                suspect ? TweakState.Blocked : TweakState.Optimal,
+                endpoint.IsMultichannel
+                    ? $"{endpoint.Channels}-channel shared format"
+                    + (providers.Count > 0 ? $"; {string.Join(", ", providers)} running" : string.Empty)
+                    : providers.Count > 0
+                        ? $"Stereo format, but {string.Join(", ", providers)} running"
+                        : "Stereo format, no spatial service observed",
+                "Engine spatialisation only, stereo endpoint",
+                suspect
+                    ? "A second spatial or effects layer may be active. Confirm in Windows that spatial sound is "
+                      + "set to Off for this device, and that any vendor surround mode is disabled. FramePath Lab "
+                      + "cannot read the spatial-sound selection itself, so this needs eyes on the setting."
+                    : "The endpoint is stereo and no third-party spatial service was observed, which is the "
+                      + "configuration that leaves the engine as the only spatial model."),
+            [],
+            suspect ? "The spatial-sound mode is verified manually in Windows sound settings." : null);
+    }
+
+    private static ExpertTweakCard AudioEffects(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "AUDIO-EFFECTS-001",
+            "Audio",
+            "Endpoint audio effects",
+            "Endpoint effects run in the audio pipeline after the application: loudness equalisation, bass "
+            + "management, virtualisation and similar.",
+            "Effects can alter level and spectral cues. Their latency and competitive value are device- and "
+            + "effect-specific, so process presence or one registry flag cannot establish a performance win.",
+            "Disabling effects removes any vendor tuning the headset relies on for its intended tonality.",
+            TweakRisk.Low,
+            TweakScope.CurrentUser,
+            EvidenceQuality.Weak,
+            false,
+            false,
+            false,
+            []);
+
+        var endpoint = context.Audio.Default;
+        if (endpoint?.EnhancementsDisabled is null)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(TweakState.Unknown,
+                    endpoint is null ? context.Audio.Observation : $"{endpoint.FriendlyName}: not reported",
+                    "Effects disabled",
+                    "This endpoint does not record an effects flag; verify it in the sound control panel."),
+                [],
+                null);
+        }
+
+        var disabled = endpoint.EnhancementsDisabled == true;
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                TweakState.Unknown,
+                $"{endpoint.FriendlyName}: effects {(disabled ? "disabled" : "enabled")}",
+                "No automatic recommendation",
+                disabled
+                    ? "No endpoint effects are applied after the game."
+                    : "Endpoint effects may be active. Verify the actual endpoint and evaluate audibility and latency before changing it."),
+            [],
+            null);
+    }
+
+    // ---- Network, panel and limiter ----------------------------------------------------------
+
+    private static ExpertTweakCard NetworkPathStability(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "NET-PATH-001",
+            "Network",
+            "Local network path stability",
+            "Measures round-trip time and its variation to the default gateway, which is the first hop every "
+            + "packet crosses.",
+            "First-hop loss or variable round-trip time can reveal a local Wi-Fi, cable, router, or contention "
+            + "problem. It does not measure CS2 server latency, packet processing, or hit registration.",
+            "This measures the local path only. It says nothing about the route to any game server, and a clean "
+            + "result here does not rule out a problem further upstream.",
+            TweakRisk.Low,
+            TweakScope.Machine,
+            EvidenceQuality.Moderate,
+            false,
+            false,
+            false,
+            []);
+
+        var path = context.NetworkPath;
+        if (!path.Measured)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(TweakState.Unknown, path.Observation, "Low jitter, no loss",
+                    "The local path was not measured for this scan."),
+                [],
+                null);
+        }
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                path.IsUnstable ? TweakState.Suboptimal : TweakState.Optimal,
+                path.Observation,
+                "Jitter under 2 ms with no loss",
+                path.IsUnstable
+                    ? "The first hop is unstable. On a wireless link, move to wired. On a wired link, check the "
+                      + "cable and the port, and confirm nothing else on the connection is saturating the uplink."
+                    : "The first hop is stable, so any remaining instability is upstream rather than local."),
+            [],
+            path.IsUnstable ? "The physical link is the user's to change." : null);
+    }
+
+    private static ExpertTweakCard PanelNativeTiming(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "DISPLAY-PANEL-001",
+            "Display",
+            "Panel native timing and refresh range",
+            "Windows only enumerates the modes the current link can carry. The panel's own description of itself "
+            + "states its preferred timing and vertical rate range independently of how it is connected.",
+            "A display running below its native resolution reports its reduced ceiling as though it were the "
+            + "panel's ceiling, so a refresh check that compares only within the current resolution will call "
+            + "that already-optimal. Reading the panel directly is the second opinion that catches it.",
+            "Diagnostic only. Changing resolution or refresh is done in Windows display settings.",
+            TweakRisk.Low,
+            TweakScope.CurrentUser,
+            EvidenceQuality.Strong,
+            false,
+            false,
+            false,
+            []);
+
+        var panel = context.Panel;
+        var timing = context.PrimaryTiming;
+        if (!panel.Available)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(TweakState.Unknown, panel.Observation, "Running at native timing",
+                    "No attached display exposed a readable descriptor."),
+                [],
+                null);
+        }
+
+        var belowNative = timing is not null
+                          && panel.NativeWidth > 0
+                          && (timing.Width < panel.NativeWidth || timing.Height < panel.NativeHeight);
+        var belowRange = timing is not null
+                         && panel.MaximumVerticalHz > 0
+                         && timing.ExactRefreshHz < panel.MaximumVerticalHz - 1.5;
+
+        var suboptimal = belowNative || belowRange;
+        var detail = suboptimal
+            ? string.Join(" ", new[]
+            {
+                belowNative
+                    ? $"The display is running {timing!.Width}x{timing.Height} against a native "
+                      + $"{panel.NativeWidth}x{panel.NativeHeight}."
+                    : string.Empty,
+                belowRange
+                    ? $"The panel states a vertical range up to {panel.MaximumVerticalHz} Hz but is running at "
+                      + $"{timing!.ExactRefreshHz:0.###} Hz. Check the cable standard and the port before "
+                      + "assuming the mode is unavailable."
+                    : string.Empty
+            }.Where(part => part.Length > 0))
+            : "The active mode matches what the panel describes as its capability.";
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                suboptimal ? TweakState.Suboptimal : TweakState.Optimal,
+                panel.Observation,
+                panel.NativeWidth > 0
+                    ? $"{panel.NativeWidth}x{panel.NativeHeight}"
+                      + (panel.MaximumVerticalHz > 0 ? $" at up to {panel.MaximumVerticalHz} Hz" : string.Empty)
+                    : "Native timing",
+                detail),
+            [],
+            suboptimal ? "Resolution and refresh are changed in Windows display settings." : null);
+    }
+
+    private static ExpertTweakCard FrameLimiterStrategy(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "LIMITER-STRATEGY-001",
+            "Presentation",
+            "Frame limiter choice",
+            "A frame limiter can sit inside the engine, inside the vendor latency path, in the driver, or in an "
+            + "external overlay. Each sits at a different point in the frame pipeline.",
+            "Limiter placement can change queueing and frame cadence, but the best choice depends on the game's "
+            + "latency path, VRR/V-Sync policy, bottleneck and target cap. It must be measured on the target system.",
+            "Two limiters active at once interact, and the lower one usually wins in an unpredictable way. Pick "
+            + "exactly one.",
+            TweakRisk.Low,
+            TweakScope.VendorControlPanel,
+            EvidenceQuality.Moderate,
+            false,
+            false,
+            true,
+            [NvidiaReflex]);
+
+        var timing = context.PrimaryTiming;
+        var cap = timing?.RecommendedVrrCap ?? 0;
+        var external = context.OverlayProcessObserved;
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                external ? TweakState.Blocked : TweakState.Optimal,
+                external
+                    ? "An overlay or statistics tool that can impose its own limit is running"
+                    : "No external limiter process was observed",
+                cap > 0 ? $"One limiter only, at {cap} FPS when using variable refresh" : "One limiter only",
+                (cap > 0
+                    ? $"With variable refresh and vertical sync engaged, cap at {cap}. With vertical sync off and "
+                      + "tearing accepted, run uncapped. "
+                    : string.Empty)
+                + "Prefer the vendor latency path's own limiter, then the engine's, then the driver's, then an "
+                + "external overlay. "
+                + (external
+                    ? "Because an overlay capable of limiting frames is running, confirm it is not also applying "
+                      + "a cap."
+                    : "Set exactly one and measure it.")),
+            [],
+            null);
+    }
+
+    private static ExpertTweakCard FastStartup(ExpertScanContext context, ITweakStateReader reader)
+    {
+        var definition = new ExpertTweakDefinition(
+            "BOOT-FASTSTART-001",
+            "Windows",
+            "Fast startup",
+            "Fast startup hibernates the kernel session rather than shutting it down, so powering on resumes the "
+            + "previous kernel state and the driver state along with it.",
+            "A restart already performs a full kernel restart. There is insufficient evidence that disabling "
+            + "Fast startup improves steady-state CS2 performance on a healthy system.",
+            "Disabling it increases cold-start time and changes shutdown semantics.",
+            TweakRisk.Low,
+            TweakScope.Machine,
+            EvidenceQuality.Weak,
+            true,
+            false,
+            false,
+            []);
+
+        if (context.FastStartupEnabled is null)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(TweakState.Unknown, "Not reported", "Disabled",
+                    "This system does not record a fast startup setting."),
+                [],
+                null);
+        }
+
+        var enabled = context.FastStartupEnabled == true;
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                TweakState.Unknown,
+                enabled ? "Enabled" : "Disabled",
+                "No performance recommendation",
+                enabled
+                    ? "A shutdown will hibernate the kernel session rather than ending it."
+                    : "A shutdown ends the kernel session, so every boot starts clean."),
+            [],
+            "Diagnostic only; use Restart when a clean kernel session is required.");
+    }
+
+    private static ExpertTweakCard InterruptAffinityPolicy(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "GPU-IRQ-AFFINITY-001",
+            "GPU",
+            "Display adapter interrupt affinity policy",
+            "An affinity policy pins a device's interrupt servicing onto chosen processors instead of letting "
+            + "the platform place it.",
+            "Steering adapter interrupts away from the processors running the game's critical threads can reduce "
+            + "the chance of an interrupt landing mid-frame. It is a genuine lever and an equally genuine way to "
+            + "make a machine worse, because a policy pointing at processors that no longer exist or that are "
+            + "already loaded is harder to diagnose than the problem it was meant to fix.",
+            "Reported only. FramePath Lab does not write interrupt affinity policy, because an incorrect value "
+            + "can prevent a device from starting and is not reversible from inside Windows if it does.",
+            TweakRisk.High,
+            TweakScope.Machine,
+            EvidenceQuality.Weak,
+            true,
+            true,
+            false,
+            []);
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                context.HasInterruptAffinityPolicy ? TweakState.Blocked : TweakState.Optimal,
+                context.HasInterruptAffinityPolicy ? "A policy is set" : "No policy set (platform default)",
+                "Platform default unless measured otherwise",
+                context.InterruptAffinityObservation
+                + (context.HasInterruptAffinityPolicy
+                    ? " A policy set by an earlier tuning attempt is worth re-validating against a capture; "
+                      + "it is not self-evidently helping."
+                    : " The platform is placing adapter interrupts, which is the right default.")),
+            [],
+            "Interrupt affinity policy is never written by this application.");
+    }
+
+    private static ExpertTweakCard DefenderExclusion(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "SECURITY-EXCLUSION-001",
+            "Security trade-off",
+            "Real-time scanning exclusions",
+            "Real-time protection inspects file activity as it happens, including the reads and shader-cache "
+            + "writes a game performs while loading and while compiling.",
+            "Excluding a game directory removes that inspection from its file path, which can reduce load-time "
+            + "and shader-compilation stalls. It also removes protection from a directory that regularly "
+            + "receives downloaded content.",
+            "This reduces a real security boundary on a directory that content is downloaded into. FramePath Lab "
+            + "reports the configured exclusions and does not add any.",
+            TweakRisk.SecurityTradeOff,
+            TweakScope.Machine,
+            EvidenceQuality.Weak,
+            true,
+            false,
+            false,
+            []);
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                context.DefenderExclusionsReadable ? TweakState.Optimal : TweakState.Unknown,
+                context.DefenderExclusions.Count > 0
+                    ? $"{context.DefenderExclusions.Count} path exclusion(s) configured"
+                    : context.DefenderObservation,
+                "Your decision, not a recommendation",
+                context.DefenderObservation
+                + " Any exclusion is a security decision for the account holder, so this card reports and does "
+                + "not advise."),
+            [],
+            "Exclusions are never added by this application.");
+    }
+
+    private static IEnumerable<ExpertTweakCard> NvidiaProfileCards(ExpertScanContext context)
+    {
+        var profile = context.NvidiaProfile;
+        var definition = new ExpertTweakDefinition(
+            "NVIDIA-PROFILE-001",
+            "GPU",
+            "Driver profile for the game",
+            "The display driver keeps a per-application profile that overrides what the game asks for: "
+            + "performance-state policy, the render queue depth, vertical sync, frame limiting and shader cache.",
+            "This is the one settings surface no Windows API exposes. A player can have every Windows and "
+            + "in-game setting correct and still run against a profile that lets the GPU drop performance states "
+            + "between frames or that overrides the in-game latency path.",
+            "Reported only. FramePath Lab reads the profile and never saves to it, because a driver profile "
+            + "write applies to the game itself rather than to Windows.",
+            TweakRisk.Low,
+            TweakScope.VendorControlPanel,
+            EvidenceQuality.Strong,
+            false,
+            false,
+            true,
+            [NvidiaReflex]);
+
+        if (!profile.Available)
+        {
+            yield return new ExpertTweakCard(
+                definition,
+                new TweakReading(TweakState.Unknown, profile.Observation, "Read from the driver",
+                    "The driver settings interface was not available on this system."),
+                [],
+                null);
+            yield break;
+        }
+
+        yield return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                TweakState.Unknown,
+                string.Join("; ", profile.Settings.Select(setting => $"{setting.Name}: {setting.Value}")),
+                "No universal profile preset",
+                profile.Observation + " Values are reported for study only. Reflex-aware games, driver versions, "
+                + "VRR policy and workload bottlenecks can change which overrides are appropriate; benchmark one change at a time."),
+            [],
+            null);
+    }
+
+    // ---- Excluded, with the reason stated ----------------------------------------------------
+
+    /// <summary>
+    /// Things that are widely recommended and do not survive scrutiny.
+    ///
+    /// For someone whose ranking is their income, the failure mode is not missing a tweak — it is
+    /// an endless spiral of applying changes that do nothing and attributing variance to them.
+    /// Saying "we checked this and it does not help, here is why" is worth as much as another
+    /// setting, because silence sends people to a forum thread instead.
+    /// </summary>
+    private static IEnumerable<ExpertTweakCard> DebunkRegister()
+    {
+        yield return Debunk(
+            "EXCLUDE-USBSUSPEND-001",
+            "USB selective suspend for the mouse",
+            "Selective suspend only powers down a device that has gone idle. A mouse being used is never idle, "
+            + "so it is never suspended, so disabling the feature changes nothing about its report timing during "
+            + "play. The setting has a real effect on devices that genuinely idle; a mouse in a match is not one.");
+
+        yield return Debunk(
+            "EXCLUDE-PAGEFILE-001",
+            "Disabling the page file",
+            "The page file is not a slower substitute for memory that Windows uses once memory runs out. It backs "
+            + "allocations that are never resident, and removing it makes some applications fail to allocate "
+            + "rather than making anything faster. On a machine with ample memory it is already barely touched.");
+
+        yield return Debunk(
+            "EXCLUDE-SUPERFETCH-001",
+            "Disabling SysMain and memory compression",
+            "Both exist to avoid disk reads. On a system with ample memory and solid-state storage they cost "
+            + "little and occasionally save a stall. Disabling them removes a mitigation without removing a cost.");
+
+        yield return Debunk(
+            "EXCLUDE-SMT-001",
+            "Disabling simultaneous multithreading",
+            "Turning it off removes scheduling capacity from a workload that has background threads to place "
+            + "somewhere. It was occasionally defensible on old schedulers and specific titles; on a current "
+            + "platform it usually costs frame consistency rather than gaining it. Measure it before believing it.");
+
+        yield return Debunk(
+            "EXCLUDE-DEBLOAT-001",
+            "Service removal and debloat scripts",
+            "These bundle dozens of unrelated changes at once, which makes any result impossible to attribute and "
+            + "any regression impossible to isolate. They also break servicing, which turns a small future problem "
+            + "into a reinstall. Change one thing and measure it.");
+
+        yield return Debunk(
+            "EXCLUDE-LAUNCHOPTS-001",
+            "Legacy launch options",
+            "Thread-count, priority and renderer flags inherited from older engines are either ignored by a modern "
+            + "engine or actively worse than its own detection. An inherited launch string is worth removing, not "
+            + "extending.");
+
+        yield return Debunk(
+            "EXCLUDE-NETTWEAK-001",
+            "Network stack registry packs",
+            "Competitive shooters send small, frequent datagrams. Settings aimed at bulk transfer throughput, "
+            + "including the classic small-packet batching option, do not apply to that traffic pattern. Measured "
+            + "jitter on the local hop is the useful number; these values are not.");
+    }
+
+    private static ExpertTweakCard Debunk(string id, string title, string reason)
+        => new(
+            new ExpertTweakDefinition(
+                id,
+                "Checked and excluded",
+                title,
+                "Commonly recommended; evaluated and not adopted.",
+                reason,
+                "Applying it spends time and attention without a measurable return, and makes real changes harder "
+                + "to attribute.",
+                TweakRisk.Low,
+                TweakScope.Machine,
+                EvidenceQuality.Disproven,
+                false,
+                false,
+                false,
+                []),
+            new TweakReading(
+                TweakState.NotApplicable,
+                "Excluded by evidence",
+                "No change",
+                reason),
+            [],
+            null);
 
     private static IEnumerable<ExpertTweakCard> NetworkTweaks(ExpertScanContext context, ITweakStateReader reader)
     {
