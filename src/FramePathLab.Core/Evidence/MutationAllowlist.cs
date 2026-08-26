@@ -119,8 +119,17 @@ public static class MutationAllowlist
         "pointer.speed"
     ];
 
-    /// <summary>The processor subgroup is the only power subgroup this catalogue touches.</summary>
-    private const string ProcessorSubgroup = "54533251-82be-4824-96c1-47b60b740d00";
+    /// <summary>
+    /// The power subgroups this catalogue touches. Everything else under the power API stays
+    /// unreachable, including the sleep, battery and display subgroups, so a tampered ledger cannot
+    /// reach settings the catalogue never offers.
+    /// </summary>
+    private static readonly string[] PermittedPowerSubgroups =
+    [
+        "54533251-82be-4824-96c1-47b60b740d00", // processor
+        "501a4d13-42af-4429-9fd1-a8218c268e20", // pcie
+        "0012ee47-9041-4b5d-9b77-535fba8b1442"  // disk
+    ];
 
     /// <summary>
     /// Returns null when the target is permitted, or the reason it is refused.
@@ -225,8 +234,9 @@ public static class MutationAllowlist
             ? target[(target.IndexOf('|', StringComparison.Ordinal) + 1)..]
             : target;
 
-        return withoutScheme.StartsWith(ProcessorSubgroup, StringComparison.OrdinalIgnoreCase)
+        return PermittedPowerSubgroups.Any(subgroup =>
+            withoutScheme.StartsWith(subgroup, StringComparison.OrdinalIgnoreCase))
             ? null
-            : $"'{target}' is not a permitted power setting.";
+            : $"'{target}' is not in a permitted power subgroup.";
     }
 }

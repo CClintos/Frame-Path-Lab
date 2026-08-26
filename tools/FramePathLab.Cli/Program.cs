@@ -171,6 +171,7 @@ internal static class Program
                 context.FastStartupEnabled,
                 context.InterruptAffinityObservation,
                 context.DefenderObservation,
+                context.BootTiming,
                 context.CpuTuning,
                 context.ReservedCpuSetObservation,
                 context.UsbModerationObservation,

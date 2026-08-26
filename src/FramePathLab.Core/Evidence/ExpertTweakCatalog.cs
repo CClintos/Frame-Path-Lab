@@ -126,6 +126,11 @@ public static class ExpertTweakCatalog
             DefenderExclusion(context),
             FrameLimiterStrategy(context),
             NetworkThrottling(reader),
+            PcieLinkPowerManagement(reader, context),
+            StorageLinkPowerManagement(reader, context),
+            NvmeIdleTimeout(reader, context),
+            ProcessorIdleDisable(reader, context),
+            LatencySensitivityHint(reader, context),
             PowerThrottling(reader),
             DeliveryOptimization(reader),
             BackgroundApplications(reader),
@@ -290,11 +295,13 @@ public static class ExpertTweakCatalog
         ITweakStateReader reader,
         ExpertScanContext context,
         TweakRisk risk = TweakRisk.Moderate,
-        string detailSuffix = "")
+        string detailSuffix = "",
+        string subgroupGuid = ProcessorSubgroup,
+        string category = "CPU")
     {
         var definition = new ExpertTweakDefinition(
             id,
-            "CPU",
+            category,
             title,
             mechanism,
             rationale,
@@ -307,7 +314,7 @@ public static class ExpertTweakCatalog
             false,
             [MicrosoftProcessorPolicy]);
 
-        var target = $"{ProcessorSubgroup}:{settingGuid}";
+        var target = $"{subgroupGuid}:{settingGuid}";
         var plan = new MutationPlan(
             $"{id}.value",
             MutationKind.PowerSchemeValue,
@@ -2198,6 +2205,118 @@ public static class ExpertTweakCatalog
             [],
             null);
     }
+
+    // ---- Power settings the interface does not show -------------------------------------------
+    //
+    // These are ordinary power-scheme values that Windows marks hidden. Hidden means absent from
+    // the settings interface; the power API reads and writes them regardless, so they need no
+    // unhiding and they revert through the ledger like any other change. Where a platform does not
+    // implement one, the read fails and the card reports it unavailable rather than guessing.
+
+    private const string PcieSubgroup = "501a4d13-42af-4429-9fd1-a8218c268e20";
+    private const string DiskSubgroup = "0012ee47-9041-4b5d-9b77-535fba8b1442";
+
+    private static ExpertTweakCard PcieLinkPowerManagement(ITweakStateReader reader, ExpertScanContext context)
+        => PowerPolicyCard(
+            "PCIE-ASPM-001",
+            "PCIe link state power management",
+            "The link between the processor and every attached device, graphics card and storage "
+            + "included, can drop into a low-power state between transfers and has to be woken again "
+            + "before the next one.",
+            "Waking the link costs microseconds, and it is paid on the first access after any idle "
+            + "gap. A frame that begins with a texture fetch or a shader load pays it inside the "
+            + "frame. This is the one hidden power setting with a plausible mechanism for graphics "
+            + "and storage stutter at once, which is why it circulates so widely.",
+            "Holds the link active, raising idle power across the whole system. On a desktop that is "
+            + "watts; on a laptop it is battery life. Some platforms ignore the setting entirely.",
+            "ee12f906-d277-404b-b6da-e5fa1a576df5",
+            0,
+            "Off (link held active)",
+            reader,
+            context,
+            TweakRisk.Moderate,
+            string.Empty,
+            PcieSubgroup,
+            "Platform");
+
+    private static ExpertTweakCard StorageLinkPowerManagement(ITweakStateReader reader, ExpertScanContext context)
+        => PowerPolicyCard(
+            "DISK-LPM-001",
+            "Storage link power management",
+            "The storage link negotiates its own low-power states between commands, and returning "
+            + "from one delays the command that woke it.",
+            "The delay lands on the first read after an idle gap, which is the shape of a game "
+            + "streaming an asset mid-round rather than during a load screen.",
+            "Holds the storage link active, costing idle power and a little drive heat. This applies "
+            + "to the link, not to the internal power states of the drive itself.",
+            "0b2d69d7-a2a1-449c-9680-f91c70521c60",
+            0,
+            "Active (no link power management)",
+            reader,
+            context,
+            TweakRisk.Moderate,
+            string.Empty,
+            DiskSubgroup,
+            "Platform");
+
+    private static ExpertTweakCard NvmeIdleTimeout(ITweakStateReader reader, ExpertScanContext context)
+        => PowerPolicyCard(
+            "DISK-NVME-IDLE-001",
+            "Solid-state drive idle timeout",
+            "The drive may enter a low-power state after a period of inactivity, and must leave it "
+            + "before serving the next request.",
+            "A longer timeout makes it far less likely the drive is asleep when a request arrives "
+            + "mid-session. The wake cost is small per event but it is paid at the least convenient "
+            + "moment, which is what makes this a stutter candidate rather than a throughput one.",
+            "The drive idles at a higher power state and runs slightly warmer. On a drive that "
+            + "already throttles thermally this is the wrong trade.",
+            "d639518a-e56d-4345-8af2-b9f32fb26109",
+            0,
+            "No idle transition",
+            reader,
+            context,
+            TweakRisk.Moderate,
+            string.Empty,
+            DiskSubgroup,
+            "Platform");
+
+    private static ExpertTweakCard ProcessorIdleDisable(ITweakStateReader reader, ExpertScanContext context)
+        => PowerPolicyCard(
+            "CPU-IDLE-DISABLE-001",
+            "Processor idle states",
+            "Idle states let a core power down between work. Leaving one takes time, and that time is "
+            + "spent before the core can begin the work that woke it.",
+            "Holding cores out of idle removes the exit latency from the path entirely. It is the "
+            + "most aggressive processor power change available and it is genuinely double-edged: "
+            + "cores that never idle give back no power budget, so the cores doing the work have less "
+            + "headroom to boost into. On a modern part this often costs more than it saves.",
+            "Every core stays powered, raising idle draw, heat and fan noise substantially. On a "
+            + "thermally or power limited part it reduces sustained boost. Measure it rather than "
+            + "assuming it.",
+            "5d76a2ca-e8c0-402f-a133-2158492d58ad",
+            1,
+            "Idle disabled",
+            reader,
+            context,
+            TweakRisk.High);
+
+    private static ExpertTweakCard LatencySensitivityHint(ITweakStateReader reader, ExpertScanContext context)
+        => PowerPolicyCard(
+            "CPU-LATENCY-HINT-001",
+            "Latency sensitivity hint response",
+            "When something signals that it is latency sensitive, this decides what share of maximum "
+            + "performance the processor jumps to in response rather than ramping normally.",
+            "Ramping is not instant, and a frame arriving during the ramp is served at a lower clock "
+            + "than the one after it. Responding fully to the hint removes the ramp from the frame "
+            + "path without holding clocks up the rest of the time, which makes this a far "
+            + "better-behaved lever than disabling idle outright.",
+            "Slightly more aggressive clock behaviour whenever a hint is raised. Applications that "
+            + "never raise one see no change at all.",
+            "619b7505-003b-4e82-b7a6-4dd29c300971",
+            100,
+            "100% of maximum performance",
+            reader,
+            context);
 
     // ---- Background contention and platform policy -------------------------------------------
 

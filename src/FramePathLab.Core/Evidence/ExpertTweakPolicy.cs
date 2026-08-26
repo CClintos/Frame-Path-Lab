@@ -116,6 +116,23 @@ public static class ExpertTweakPolicy
                 + "Whether Windows was throttling anything that mattered is a measurement.");
         }
 
+        if (HasPrefix(id, "PCIE-ASPM-", "DISK-LPM-", "DISK-NVME-IDLE-", "CPU-LATENCY-HINT-"))
+        {
+            return (TweakDisposition.OptInExperiment,
+                "Experiment: an ordinary power-scheme value that Windows hides from its own settings "
+                + "interface. Hidden is not undocumented — the power API reads and writes it directly, "
+                + "and it reverts through the ledger like anything else. Whether holding a link or a "
+                + "drive awake is worth the idle power is a measurement.");
+        }
+
+        if (HasPrefix(id, "CPU-IDLE-DISABLE-"))
+        {
+            return (TweakDisposition.OptInExperiment,
+                "Experiment, and the most double-edged one here: cores that never idle give back no "
+                + "power budget, so the cores doing the work have less headroom to boost into. On a "
+                + "modern part this frequently costs more than it saves. Measure both states.");
+        }
+
         if (HasPrefix(id, "SERVICE-"))
         {
             return (TweakDisposition.OptInExperiment,

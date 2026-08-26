@@ -280,7 +280,8 @@ public static partial class PlatformStateScanner
                 ReadFlag(output, "useplatformtick"),
                 ReadFlag(output, "disabledynamictick"),
                 ReadWord(output, "tscsyncpolicy"),
-                "Boot configuration read.");
+                "Boot configuration read.",
+                ReadWord(output, "hypervisorlaunchtype"));
         }
         catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or IOException
                                              or UnauthorizedAccessException or InvalidOperationException)

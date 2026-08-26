@@ -283,10 +283,20 @@ public sealed record BootTimingState(
     bool? UsePlatformTick,
     bool? DisableDynamicTick,
     string? TscSyncPolicy,
-    string Observation)
+    string Observation,
+    string? HypervisorLaunchType = null)
 {
     public static BootTimingState Unreadable(string reason)
         => new(false, null, null, null, null, reason);
+
+    /// <summary>
+    /// When the hypervisor launches at boot, Windows itself runs as a guest on top of it. That is
+    /// a cost paid by everything on the machine, and it is separate from — and larger than — the
+    /// memory-integrity feature people usually go looking for.
+    /// </summary>
+    public bool HypervisorActive
+        => HypervisorLaunchType is not null
+           && !HypervisorLaunchType.Equals("Off", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Either forced option routes the performance counter onto the platform timer, which costs

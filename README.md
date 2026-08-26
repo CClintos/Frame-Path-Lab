@@ -176,6 +176,15 @@ Firmware controls are described per-processor: which ones this part actually exp
 
 ---
 
+## Power settings Windows hides from itself
+
+Windows marks a number of power-scheme values hidden. Hidden means absent from the settings interface — the power API reads and writes them regardless, so no unhiding step is needed and they revert through the ledger like anything else. Most guides tell you to run an attributes command to expose them in the UI first; that is only necessary if you intend to click them.
+
+- **PCIe link state power management.** The link to the graphics card and to storage drops into a low-power state between transfers and must be woken before the next one. That wake is paid on the first access after any idle gap, which for a frame beginning with a texture fetch is paid inside the frame. The one hidden setting with a plausible mechanism for graphics and storage stutter simultaneously, which is why it circulates.
+- **Storage link power management** and **drive idle timeout** — the same argument one layer down, and the shape of a game streaming an asset mid-round rather than at a load screen.
+- **Latency sensitivity hint response** — what share of maximum performance the processor jumps to when something signals it is latency sensitive, instead of ramping. Better behaved than disabling idle, because it lifts clocks only when asked.
+- **Processor idle states**, offered and deliberately flagged as the most double-edged item here: cores that never idle give back no power budget, so the cores doing the work have less headroom to boost into. On a modern part this frequently costs more than it saves.
+
 ## Services
 
 Around 35 Windows services, offered one at a time, each stating exactly what stops working — "printing stops entirely", "other machines can no longer reach shares hosted here", "biometric sign-in stops".
