@@ -212,4 +212,10 @@ public sealed record ExpertScanContext(
     bool? NetworkMessageSignalledInterrupts,
     string NetworkInterruptObservation,
     bool? SpeculativeMitigationsOverridden,
-    string SpeculativeMitigationObservation);
+    string SpeculativeMitigationObservation,
+    CpuTuningState CpuTuning,
+    ulong? ReservedCpuSetMask,
+    string ReservedCpuSetObservation,
+    int UsbControllers,
+    int ModeratedUsbControllers,
+    string UsbModerationObservation);

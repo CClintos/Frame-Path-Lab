@@ -81,6 +81,106 @@ public static partial class PlatformStateScanner
     }
 
     private const string NetworkClassGuid = "{4d36e972-e325-11ce-bfc1-08002be10318}";
+    private const string UsbClassGuid = "{36fc9e60-c465-11cf-8056-444553540000}";
+
+    /// <summary>
+    /// Reads the reserved processor set: the cores the scheduler has been told to keep general work
+    /// and device interrupts off.
+    ///
+    /// This is the inverse of pinning a process, and the difference matters. Pinning the game means
+    /// opening a handle to it with rights to change its execution, which an anti-cheat cannot
+    /// distinguish from hostile behaviour. Reserving cores moves everything else instead, so the
+    /// game lands on the free cores without ever being touched.
+    /// </summary>
+    public static (ulong? ReservedMask, string Observation) ReadReservedCpuSets()
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Control\Session Manager\Kernel", writable: false);
+            var raw = key?.GetValue("ReservedCpuSets");
+
+            if (raw is not byte[] bytes || bytes.Length == 0)
+            {
+                return (null, "No processor reservation is configured; the scheduler may use every core.");
+            }
+
+            // The value is a little-endian bitmask; only the first 64 processors are modelled here,
+            // which covers every desktop part this catalogue targets.
+            ulong mask = 0;
+            for (var index = 0; index < Math.Min(bytes.Length, 8); index++)
+            {
+                mask |= (ulong)bytes[index] << (index * 8);
+            }
+
+            return mask == 0
+                ? (null, "A reservation value exists but reserves no processors.")
+                : (mask,
+                    $"Processors 0x{mask:X} are reserved from general scheduling "
+                    + $"({System.Numerics.BitOperations.PopCount(mask)} of them).");
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+        {
+            return (null, $"Processor reservation could not be read: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Reads the interrupt moderation interval on the USB host controllers.
+    ///
+    /// The controller batches interrupts so the processor is disturbed less often. That batching
+    /// delays delivery of every report inside the batch, which only becomes visible above the
+    /// ordinary polling rate — at which point it is delaying exactly the reports a high-rate mouse
+    /// exists to produce.
+    /// </summary>
+    public static (bool Readable, int Controllers, int ModeratedControllers, string Observation)
+        ReadUsbInterruptModeration()
+    {
+        try
+        {
+            using var pci = Registry.LocalMachine.OpenSubKey(PciEnumPath, writable: false);
+            if (pci is null)
+            {
+                return (false, 0, 0, "PCI device enumeration could not be read.");
+            }
+
+            var total = 0;
+            var moderated = 0;
+            foreach (var deviceName in pci.GetSubKeyNames())
+            {
+                using var device = pci.OpenSubKey(deviceName, writable: false);
+                foreach (var instanceName in device?.GetSubKeyNames() ?? [])
+                {
+                    using var instance = device!.OpenSubKey(instanceName, writable: false);
+                    if (instance?.GetValue("ClassGUID") as string is not { } classGuid
+                        || !classGuid.Equals(UsbClassGuid, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    total++;
+                    using var parameters = instance.OpenSubKey("Device Parameters", writable: false);
+
+                    // Absent means the controller's own default applies, which is a moderated
+                    // interval on every current Windows build.
+                    if (parameters?.GetValue("IdleInWorkingState") is null
+                        || parameters.GetValue("IdleInWorkingState") is int idle && idle != 0)
+                    {
+                        moderated++;
+                    }
+                }
+            }
+
+            return total == 0
+                ? (false, 0, 0, "No USB host controller was found under PCI enumeration.")
+                : (true, total, moderated,
+                    $"{total} USB host controller(s); {moderated} using a moderated or default interrupt interval.");
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+        {
+            return (false, 0, 0, $"USB controller state could not be read: {exception.Message}");
+        }
+    }
 
     /// <summary>
     /// Reads the interrupt mode of the network adapter carrying live traffic. Same reasoning as the

@@ -61,6 +61,18 @@ For someone whose ranking is their income the failure mode is not a missing twea
 
 Roughly thirty research candidates span CPU/power policy, timing, GPU/presentation, display, input, background activity, and network context. Unsupported registry writes, security reductions, game-process manipulation, raw NIC/driver changes, MMCSS folklore, and timer myths remain visible as **Excluded** with no Apply plan. The retained power-policy experiments show their literal supported writes before approval.
 
+### CPU & platform
+
+A dedicated view for the firmware-level tuning this application deliberately does not write, plus the one stability measurement that is actually available.
+
+**Validating a voltage offset is where almost every guide goes wrong.** A curve offset lowers voltage at every point on the frequency ladder, but the margin it removes is not evenly spread. It bites at the top of the boost range — highest clock, lowest voltage for that clock — and at idle, where the processor makes constant brief boosts and low-power transitions. An all-core stress test can reach neither: loading every core drops boost clocks and raises the voltage supplied for them, so it exercises the safest part of the curve. A configuration can pass one for hours and still reboot sitting at the desktop.
+
+The tab lays out the validation sequence in the order that actually covers those regions — single-core boost cycling first, then real idle uptime, and the all-core run last and least — and states for each step what it cannot catch.
+
+**Hardware error history** is the measurement that makes this tractable. The platform logs machine-check exceptions and corrected errors whether or not anything visible goes wrong, so counting them over real uptime is the only stability signal that covers idle. A clean log is not proof; a dirty one is proof of instability, and on a machine running an offset the offset is the first suspect.
+
+The firmware controls are described per-processor: which ones this part actually exposes, what each does, and — for a cache-stacked part — which are locked and will silently ignore anything entered.
+
 ### Verify — did the change actually do anything?
 
 This is the part a settings guide cannot do. Anyone can list registry values; nobody watching a video can tell whether they did anything on *your* machine, so the honest answer to "did that help?" has always been a shrug. Capture the same scenario either side of one recorded change and the shrug becomes a number.

@@ -136,7 +136,10 @@ public static class ExpertTweakCatalog
             TelemetryAutologger(reader),
             NetworkInterruptMode(context),
             BootTiming(context),
-            SpeculativeMitigations(context)
+            SpeculativeMitigations(context),
+            ReservedProcessorSet(context),
+            UsbInterruptModeration(context),
+            HardwareErrorHistory(context)
         };
 
         cards.AddRange(NvidiaProfileCards(context));
@@ -2649,6 +2652,180 @@ public static class ExpertTweakCatalog
             "Processor mitigation state is never written by this application.");
     }
 
+    // ---- Scheduling isolation and the input controller ---------------------------------------
+
+    private static ExpertTweakCard ReservedProcessorSet(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "CPU-RESERVED-001",
+            "CPU",
+            "Reserved processor set",
+            "The scheduler can be told which processors to keep general work and device interrupts off. "
+            + "Everything the system schedules avoids them; anything not otherwise constrained lands on what "
+            + "remains.",
+            "This is the inverse of pinning the game, and the inversion is what makes it usable. Pinning means "
+            + "opening a handle to the game with rights to change how it executes, which an anti-cheat cannot "
+            + "distinguish from hostile behaviour. Reserving cores moves everything else instead, so the game "
+            + "gets clear processors without ever being touched — the same placement, none of the exposure.",
+            "Reserved processors are not removed from the machine; they are removed from the general scheduler's "
+            + "default set. Reserve too many and background work piles onto too few, which costs more than the "
+            + "isolation gains. Requires a restart.",
+            TweakRisk.High,
+            TweakScope.Machine,
+            EvidenceQuality.Moderate,
+            true,
+            true,
+            false,
+            [MicrosoftAffinity]);
+
+        var cpu = context.Cpu;
+        var mask = context.ReservedCpuSetMask;
+
+        // Without a distinct preferred group there is nothing to isolate toward, so no reservation
+        // is proposed rather than inventing a split of a uniform CPU.
+        if (!cpu.HasDistinctPreferredGroup)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(
+                    mask.HasValue ? TweakState.Blocked : TweakState.NotApplicable,
+                    context.ReservedCpuSetObservation,
+                    "No reservation on a uniform processor",
+                    mask.HasValue
+                        ? "A reservation is configured, but this processor has no asymmetry to isolate toward. "
+                          + "Verify it was intended; on a uniform part it removes capacity without buying "
+                          + "placement."
+                        : cpu.PreferredGroupReason
+                          + " With every core equivalent there is nothing for a reservation to steer work away "
+                          + "from."),
+                [],
+                null);
+        }
+
+        // Reserve the complement of the preferred group: keep background work off the good cores.
+        var reserve = cpu.SystemAffinityMask & ~cpu.PreferredAffinityMask;
+        var alreadySet = mask.HasValue && mask.Value == reserve;
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                alreadySet ? TweakState.Optimal : TweakState.Blocked,
+                context.ReservedCpuSetObservation,
+                $"Reserve 0x{reserve:X}, leaving 0x{cpu.PreferredAffinityMask:X} clear",
+                alreadySet
+                    ? "General work is already kept off the preferred core group."
+                    : cpu.PreferredGroupReason
+                      + $" Reserving 0x{reserve:X} would keep background work and device interrupts off the "
+                      + "preferred cores without the game process being touched at all. This build reports the "
+                      + "mask rather than writing it: the value is a kernel scheduling policy, a wrong one is "
+                      + "only recoverable by editing it back before the next boot completes, and it deserves a "
+                      + "deliberate decision rather than a button."),
+            [],
+            "Processor reservation is reported, not written, in this build.");
+    }
+
+    private static ExpertTweakCard UsbInterruptModeration(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "INPUT-IMOD-001",
+            "Input",
+            "USB controller interrupt moderation",
+            "The host controller batches interrupts so the processor is disturbed once per interval rather than "
+            + "once per transfer. Current Windows uses a moderated interval by default.",
+            "Batching delays every report inside the batch. At ordinary polling rates the interval is shorter "
+            + "than the gap between reports and nothing is held up; above that, the moderation interval becomes "
+            + "the thing deciding when a report arrives. It is the most likely explanation when a high-rate "
+            + "mouse measures a sustained rate below what it advertises.",
+            "Raises interrupt load on the controller's processor. Reported here rather than written: the "
+            + "interval lives in the controller's memory-mapped registers, and reaching it means writing device "
+            + "memory directly, which is not something this application does.",
+            TweakRisk.High,
+            TweakScope.Machine,
+            EvidenceQuality.Moderate,
+            true,
+            true,
+            false,
+            []);
+
+        var input = context.Input;
+        var suspect = input is { Measured: true } && (input.IsRateDegraded || input.IsJitterHigh);
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                context.UsbControllers == 0
+                    ? TweakState.Unknown
+                    : suspect ? TweakState.Blocked : TweakState.Optimal,
+                context.UsbModerationObservation,
+                "Unmoderated, if a high report rate is in use",
+                context.UsbControllers == 0
+                    ? "No USB host controller state could be read."
+                    : suspect
+                        ? "The measured report stream is degraded or uneven, and controller interrupt "
+                          + "moderation is a candidate cause. Before changing anything at the controller, move "
+                          + "the mouse to a port on a different controller and re-measure — that isolates it "
+                          + "without touching device registers."
+                        : "Report delivery measured clean, so moderation is not currently costing anything "
+                          + "detectable. It only becomes relevant above the ordinary polling rate."),
+            [],
+            "Controller interrupt registers are never written by this application.");
+    }
+
+    private static ExpertTweakCard HardwareErrorHistory(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "CPU-STABILITY-001",
+            "CPU",
+            "Hardware error history",
+            "The platform logs machine-check exceptions and corrected hardware errors as they happen, whether "
+            + "or not anything visible goes wrong.",
+            "This is the only stability signal that covers idle. A voltage offset is validated by stress tests "
+            + "that load every core, which is the region an offset is least likely to break; the region it does "
+            + "break — maximum single-core boost, and the constant low-power transitions at idle — is the one "
+            + "nothing can provoke on demand. The error log catches it either way, over real uptime.",
+            "Reported only. A clean history is not proof of stability, but a dirty one is proof of instability.",
+            TweakRisk.Low,
+            TweakScope.Machine,
+            EvidenceQuality.Strong,
+            false,
+            false,
+            false,
+            []);
+
+        var errors = context.CpuTuning.HardwareErrors;
+        if (!errors.Readable)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(TweakState.Unknown, errors.Observation, "No logged hardware errors",
+                    "The system event log could not be queried for hardware errors."),
+                [],
+                null);
+        }
+
+        var state = errors.HasUncorrectedErrors
+            ? TweakState.Blocked
+            : errors.HasCorrectedErrors ? TweakState.Suboptimal : TweakState.Optimal;
+
+        var detail = errors.HasUncorrectedErrors
+            ? "Uncorrected machine checks have been logged. On a machine running any voltage offset, that "
+              + "offset is the first suspect — relax it and re-check. If no offset is in use, this points at "
+              + "memory settings, power delivery or the processor itself."
+            : errors.HasCorrectedErrors
+                ? "Corrected errors mean the hardware detected a fault and recovered. Nothing crashed, but the "
+                  + "margin is being consumed rather than nothing being wrong. Worth relaxing a voltage offset "
+                  + "by a step and watching whether the count stops rising."
+                : "No hardware errors logged in the window. Combined with real uptime this is the strongest "
+                  + "available evidence that a voltage offset is holding — stronger than any stress test, "
+                  + "because it covers idle.";
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(state, errors.Observation, "No logged hardware errors", detail),
+            [],
+            null);
+    }
+
     // ---- Excluded, with the reason stated ----------------------------------------------------
 
     /// <summary>
@@ -2745,6 +2922,26 @@ public static class ExpertTweakCatalog
             "Real-time clock interrupt priority",
             "An undocumented value with no published effect on any current Windows version, carried forward from "
             + "guides written for operating systems that scheduled interrupts differently.");
+
+        yield return Debunk(
+            "EXCLUDE-SECUREBOOT-001",
+            "Disabling secure boot and the platform trust module",
+            "Widely recommended by optimisation guides as part of a general firmware clean-out. Several "
+            + "competitive anti-cheat systems require secure boot to be on and will refuse to launch without "
+            + "it, and some require memory integrity as well. For someone whose ranking is their income, being "
+            + "locked out of the platform is a categorically worse outcome than any frame-time gain this could "
+            + "produce. Check what your leagues require before touching either.");
+
+        yield return Debunk(
+            "EXCLUDE-ALLCORE-VALIDATION-001",
+            "Validating a voltage offset with an all-core stress test",
+            "The standard advice, and structurally the wrong test. Loading every core drops boost clocks and "
+            + "raises the voltage supplied for those clocks, which exercises the safest part of the curve. A "
+            + "negative offset fails at maximum single-core boost, where the clock is highest and the voltage "
+            + "for it is lowest, and at idle, where the processor makes constant brief boosts and low-power "
+            + "transitions. An offset can pass an all-core run for hours and reboot the machine sitting at the "
+            + "desktop. Use a core-cycling single-thread harness, then real uptime, and watch the hardware "
+            + "error count.");
     }
 
     private static ExpertTweakCard Debunk(string id, string title, string reason)

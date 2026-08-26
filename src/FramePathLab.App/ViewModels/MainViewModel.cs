@@ -23,6 +23,7 @@ public sealed class MainViewModel : ObservableObject
     private ExpertScanContext? _expertContext;
     private string _expertSummary = "Run the expert scan to read CPU topology, display timing, GPU state and input delivery.";
     private string _expertHardware = "Not scanned";
+    private CpuTuningDisplay? _cpuTuning;
     private bool _measureInput = true;
     private ScanReport? _currentScan;
     private CaptureAnalysis? _currentAnalysis;
@@ -90,6 +91,10 @@ public sealed class MainViewModel : ObservableObject
 
     public ObservableCollection<ExpertTransactionDisplay> ExpertTransactions { get; } = [];
 
+    public ObservableCollection<TuningControlDisplay> CpuControls { get; } = [];
+
+    public ObservableCollection<StabilityStepDisplay> CpuStabilityPlan { get; } = [];
+
     public AsyncRelayCommand ExpertScanCommand { get; }
 
     public AsyncRelayCommand RevertAllExpertCommand { get; }
@@ -117,6 +122,14 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public string ExpertScanButtonText => IsBusy ? "Scanning…" : "Run expert scan";
+
+    public CpuTuningDisplay? CpuTuning
+    {
+        get => _cpuTuning;
+        private set => SetProperty(ref _cpuTuning, value);
+    }
+
+    public bool HasCpuTuning => _cpuTuning is not null;
 
     private async Task ExpertScanAsync()
     {
@@ -173,6 +186,21 @@ public sealed class MainViewModel : ObservableObject
                          + (timing is not null
                              ? $" · {timing.ExactRefreshHz:0.###} Hz exact refresh"
                              : string.Empty);
+
+        CpuTuning = new CpuTuningDisplay(_expertContext.CpuTuning, _expertContext.Cpu);
+        OnPropertyChanged(nameof(HasCpuTuning));
+
+        CpuControls.Clear();
+        foreach (var control in CpuTuning.Controls)
+        {
+            CpuControls.Add(control);
+        }
+
+        CpuStabilityPlan.Clear();
+        foreach (var step in CpuTuning.StabilityPlan)
+        {
+            CpuStabilityPlan.Add(step);
+        }
 
         RefreshExpertTransactions();
     }

@@ -1,3 +1,4 @@
+using FramePathLab.Core.Evidence;
 using FramePathLab.Core.Models;
 using FramePathLab.Windows.Input;
 
@@ -83,6 +84,12 @@ public sealed class ExpertScanCoordinator
         var bootTiming = PlatformStateScanner.ReadBootTiming();
         var (nicMsi, nicMsiObservation) = PlatformStateScanner.ReadNetworkInterruptMode();
         var (mitigationsOverridden, mitigationObservation) = PlatformStateScanner.ReadSpeculativeMitigations();
+        var (reservedMask, reservedObservation) = PlatformStateScanner.ReadReservedCpuSets();
+        var (_, usbControllers, moderatedUsb, usbObservation) = PlatformStateScanner.ReadUsbInterruptModeration();
+
+        // A week covers enough real idle time for a marginal voltage offset to announce itself.
+        var hardwareErrors = HardwareErrorScanner.Scan(TimeSpan.FromDays(7));
+        var cpuTuning = CpuTuningAdvisor.Build(cpu, hardwareErrors, (long)(Environment.TickCount64 / 1000));
 
         var networkPath = measureNetwork
             ? NetworkPathProbe.Measure(cancellationToken: cancellationToken)
@@ -121,7 +128,13 @@ public sealed class ExpertScanCoordinator
             nicMsi,
             nicMsiObservation,
             mitigationsOverridden,
-            mitigationObservation);
+            mitigationObservation,
+            cpuTuning,
+            reservedMask,
+            reservedObservation,
+            usbControllers,
+            moderatedUsb,
+            usbObservation);
     }
 
     /// <summary>

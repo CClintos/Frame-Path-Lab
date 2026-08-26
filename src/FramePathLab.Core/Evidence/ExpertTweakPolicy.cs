@@ -180,6 +180,21 @@ public static class ExpertTweakPolicy
                 + "both directions; the change is not one this application makes.");
         }
 
+        if (HasPrefix(id, "CPU-RESERVED-"))
+        {
+            return (TweakDisposition.DiagnosticOnly,
+                "Reported only: a reserved processor set is kernel scheduling policy. A wrong mask is only "
+                + "recoverable by editing it back before the next boot completes, which is not a state to "
+                + "reach by pressing a button. The recommended mask is shown so it can be set deliberately.");
+        }
+
+        if (HasPrefix(id, "INPUT-IMOD-", "CPU-STABILITY-"))
+        {
+            return (TweakDisposition.DiagnosticOnly,
+                "Reported only: the underlying control lives in device registers or is a measurement rather "
+                + "than a setting.");
+        }
+
         if (HasPrefix(id, "NET-MSI-"))
         {
             return (TweakDisposition.DiagnosticOnly,

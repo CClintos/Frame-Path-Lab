@@ -64,7 +64,10 @@ internal static class Program
         ("Policy leaves the catalogue able to act", TestPolicyLeavesWritableTweaksAsync),
         ("Verifier reports no measured change inside noise", TestVerifierNoChangeAsync),
         ("Verifier flags a tail regression", TestVerifierRegressionAsync),
-        ("Verifier refuses incomparable captures", TestVerifierRefusesMismatchAsync)
+        ("Verifier refuses incomparable captures", TestVerifierRefusesMismatchAsync),
+        ("Hardware error history reads without throwing", TestHardwareErrorScanAsync),
+        ("CPU tuning plan orders the boost region before all-core", TestCpuTuningPlanAsync),
+        ("Stacked-cache parts report locked boost controls", TestCpuTuningStackedCacheAsync)
     ];
 
     public static async Task<int> Main()
@@ -1537,6 +1540,84 @@ internal static class Program
         public MutationRecord Revert(MutationRecord record) => inner.Revert(record);
 
         public bool RequiresElevation(MutationPlan plan) => inner.RequiresElevation(plan);
+    }
+
+    private static Task TestHardwareErrorScanAsync()
+    {
+        var summary = HardwareErrorScanner.Scan(TimeSpan.FromDays(7));
+        Assert(!string.IsNullOrWhiteSpace(summary.Observation), "the summary must state its status");
+
+        if (!summary.Readable)
+        {
+            Assert(summary.TotalEvents == 0, "an unreadable summary must not claim events");
+            Assert(!summary.HasUncorrectedErrors && !summary.HasCorrectedErrors,
+                "an unreadable summary must not assert instability");
+            return Task.CompletedTask;
+        }
+
+        AssertEqual(summary.TotalEvents, summary.MachineCheckExceptions + summary.CorrectedErrors,
+            "the event breakdown must sum to the total");
+        Assert(summary.Recent.Count <= summary.TotalEvents, "recent events cannot exceed the total");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestCpuTuningPlanAsync()
+    {
+        var state = CpuTuningAdvisor.Build(
+            BuildTopology(8, 96UL * 1024 * 1024),
+            HardwareErrorSummary.Unreadable("test"),
+            uptimeSeconds: 3600);
+
+        var plan = state.StabilityPlan.OrderBy(step => step.Order).ToArray();
+        Assert(plan.Length >= 3, "the validation plan must have at least three steps");
+
+        // The whole point of the sequence: the region a curve offset actually breaks is tested
+        // before the all-core run, because passing all-core is the mistake being guarded against.
+        var firstBoost = Array.FindIndex(plan, step => step.Region == StabilityRegion.SingleCoreBoost);
+        var firstAllCore = Array.FindIndex(plan, step => step.Region == StabilityRegion.AllCoreLoad);
+        Assert(firstBoost >= 0, "the plan must test the single-core boost region");
+        Assert(firstAllCore >= 0, "the plan must include an all-core step");
+        Assert(firstBoost < firstAllCore,
+            "single-core boost must be validated before all-core load, not after");
+
+        var idle = Array.FindIndex(plan, step => step.Region == StabilityRegion.IdleAndTransient);
+        Assert(idle >= 0 && idle < firstAllCore, "the idle region must be validated before all-core load");
+
+        foreach (var step in plan)
+        {
+            Assert(!string.IsNullOrWhiteSpace(step.WhatItMisses),
+                $"step '{step.Name}' must state what it cannot catch");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static Task TestCpuTuningStackedCacheAsync()
+    {
+        var stacked = CpuTuningAdvisor.Build(
+            BuildTopology(8, 96UL * 1024 * 1024) with { Vendor = "AuthenticAMD", Brand = "Test Ryzen X3D" },
+            HardwareErrorSummary.Unreadable("test"),
+            uptimeSeconds: 3600);
+
+        Assert(stacked.HasStackedCache, "96 MiB across 8 cores must read as stacked cache");
+        Assert(stacked.MultiplierLocked, "a stacked-cache part must report its multiplier as locked");
+
+        var boost = stacked.Controls.FirstOrDefault(control =>
+            control.Name.Contains("Boost clock", StringComparison.OrdinalIgnoreCase));
+        Assert(boost is not null, "the boost override control must be described");
+        Assert(!boost!.AvailableOnThisPart,
+            "boost override must be reported unavailable on a stacked-cache part");
+
+        var curve = stacked.Controls.FirstOrDefault(control =>
+            control.Name.Contains("Curve", StringComparison.OrdinalIgnoreCase));
+        Assert(curve?.AvailableOnThisPart == true, "the curve must remain available on a stacked-cache part");
+
+        var conventional = CpuTuningAdvisor.Build(
+            BuildTopology(8, 32UL * 1024 * 1024) with { Vendor = "AuthenticAMD", Brand = "Test Ryzen" },
+            HardwareErrorSummary.Unreadable("test"),
+            uptimeSeconds: 3600);
+        Assert(!conventional.MultiplierLocked, "a conventional part must not report a locked multiplier");
+        return Task.CompletedTask;
     }
 
     private sealed class CountingReader(ITweakStateReader inner) : ITweakStateReader
