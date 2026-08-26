@@ -158,6 +158,13 @@ internal static class Program
                 context.GpuMessageSignalledInterrupts,
                 context.GpuInterruptObservation,
                 context.NetworkAdapters,
+                context.Audio,
+                context.NetworkPath,
+                context.Panel,
+                context.NvidiaProfile,
+                context.FastStartupEnabled,
+                context.InterruptAffinityObservation,
+                context.DefenderObservation,
                 Tweaks = cards
             },
             JsonOptions));

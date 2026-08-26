@@ -27,14 +27,24 @@ public sealed class ExpertScanCoordinator
         bool measureScheduler,
         TimeSpan inputDuration,
         CancellationToken cancellationToken = default)
+        => ScanAsync(environment, measureInput, measureScheduler, measureNetwork: true, inputDuration, cancellationToken);
+
+    public Task<ExpertScanContext> ScanAsync(
+        EnvironmentSnapshot environment,
+        bool measureInput,
+        bool measureScheduler,
+        bool measureNetwork,
+        TimeSpan inputDuration,
+        CancellationToken cancellationToken = default)
         => Task.Run(
-            () => Scan(environment, measureInput, measureScheduler, inputDuration, cancellationToken),
+            () => Scan(environment, measureInput, measureScheduler, measureNetwork, inputDuration, cancellationToken),
             cancellationToken);
 
     private ExpertScanContext Scan(
         EnvironmentSnapshot environment,
         bool measureInput,
         bool measureScheduler,
+        bool measureNetwork,
         TimeSpan inputDuration,
         CancellationToken cancellationToken)
     {
@@ -60,6 +70,17 @@ public sealed class ExpertScanCoordinator
         var steam = PlatformStateScanner.ReadSteamActivity();
         var (forcedClock, counterFrequency) = PlatformStateScanner.ReadPlatformTimer();
         var (msiEnabled, msiPath, msiObservation) = PlatformStateScanner.ReadGpuInterruptMode();
+        var audio = AudioEndpointScanner.Scan();
+        var panel = DisplayEdidScanner.Scan();
+        var nvidia = NvidiaProfileScanner.Scan(_gameExecutableName);
+        var fastStartup = PlatformStateScanner.ReadFastStartup();
+        var (hasAffinityPolicy, affinityObservation) = PlatformStateScanner.ReadInterruptAffinityPolicy();
+        var (defenderReadable, defenderPaths, defenderObservation) = PlatformStateScanner.ReadDefenderExclusions();
+
+        var networkPath = measureNetwork
+            ? NetworkPathProbe.Measure(cancellationToken: cancellationToken)
+            : new NetworkPathQuality(false, "not measured", 0, 0, 0, 0, 0, 0,
+                "The local network path was not measured for this scan.");
 
         return new ExpertScanContext(
             environment,
@@ -77,7 +98,18 @@ public sealed class ExpertScanCoordinator
             counterFrequency,
             msiEnabled,
             msiPath,
-            msiObservation);
+            msiObservation,
+            audio,
+            networkPath,
+            panel,
+            nvidia,
+            fastStartup,
+            hasAffinityPolicy,
+            affinityObservation,
+            defenderReadable,
+            defenderPaths,
+            defenderObservation,
+            environment.ObservedOptionalApplications.Count > 0);
     }
 
     /// <summary>

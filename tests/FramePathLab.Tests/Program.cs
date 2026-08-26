@@ -51,7 +51,11 @@ internal static class Program
         ("Expert catalogue evaluates without mutating", TestExpertCatalogueReadOnlyAsync),
         ("SMBIOS reports a self-consistent memory configuration", TestSmbiosMemoryAsync),
         ("Stacked cache is detected from cache per core", TestStackedCacheDetectionAsync),
-        ("Platform timer frequency is read and classified", TestPlatformTimerAsync)
+        ("Platform timer frequency is read and classified", TestPlatformTimerAsync),
+        ("Audio endpoints report a plausible shared format", TestAudioEndpointsAsync),
+        ("Panel identity is self-consistent", TestPanelIdentityAsync),
+        ("Driver profile degrades cleanly when absent", TestNvidiaProfileAsync),
+        ("Excluded tweaks never offer a mutation", TestDebunkRegisterAsync)
     ];
 
     public static async Task<int> Main()
@@ -1092,6 +1096,101 @@ internal static class Program
         // The classification must agree with the frequency it was derived from, in both directions.
         Assert(forced == (frequency == 14_318_180), "forced-clock classification must match the frequency");
         return Task.CompletedTask;
+    }
+
+    private static Task TestAudioEndpointsAsync()
+    {
+        var audio = AudioEndpointScanner.Scan();
+        if (!audio.Available)
+        {
+            Assert(audio.Endpoints.Count == 0, "an unavailable audio reading must carry no endpoints");
+            return Task.CompletedTask;
+        }
+
+        Assert(audio.Endpoints.Count > 0, "an available reading must carry at least one endpoint");
+        Assert(audio.Endpoints.Count(endpoint => endpoint.IsDefault) == 1,
+            "exactly one endpoint must be marked representative");
+
+        foreach (var endpoint in audio.Endpoints)
+        {
+            // The stored format sits behind a property-variant header. Parsing from the wrong
+            // offset yields a rate of 1 Hz or 0 channels, so these bounds are the regression guard.
+            Assert(endpoint.SampleRateHz is >= 8000 and <= 768000,
+                $"implausible sample rate {endpoint.SampleRateHz} — the format blob offset is wrong");
+            Assert(endpoint.Channels is > 0 and <= 32,
+                $"implausible channel count {endpoint.Channels}");
+            Assert(endpoint.IsResampling == (endpoint.SampleRateHz != 48000),
+                "resampling must be derived from the reported rate");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static Task TestPanelIdentityAsync()
+    {
+        var panel = DisplayEdidScanner.Scan();
+        if (!panel.Available)
+        {
+            Assert(!string.IsNullOrWhiteSpace(panel.Observation), "an unavailable panel must state why");
+            return Task.CompletedTask;
+        }
+
+        Assert(panel.ManufacturerCode.Length == 3, "the manufacturer code must be three letters");
+        Assert(panel.NativeWidth is >= 0 and <= 16384, $"implausible native width {panel.NativeWidth}");
+        Assert(panel.NativeHeight is >= 0 and <= 16384, $"implausible native height {panel.NativeHeight}");
+        if (panel.MaximumVerticalHz > 0)
+        {
+            Assert(panel.MaximumVerticalHz >= panel.MinimumVerticalHz,
+                "the vertical range maximum must not sit below its minimum");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static Task TestNvidiaProfileAsync()
+    {
+        var profile = NvidiaProfileScanner.Scan("cs2");
+
+        // The driver library is absent on most build agents. The contract that matters is that a
+        // missing or uncooperative driver produces an empty, explained result and never throws.
+        Assert(!string.IsNullOrWhiteSpace(profile.Observation), "the profile reading must state its status");
+        if (!profile.Available)
+        {
+            Assert(profile.Settings.Count == 0, "an unavailable profile must carry no settings");
+        }
+        else
+        {
+            Assert(profile.Settings.Count > 0, "an available profile must carry at least one setting");
+            foreach (var setting in profile.Settings)
+            {
+                Assert(!string.IsNullOrWhiteSpace(setting.Name), "a setting must be named");
+                Assert(!string.IsNullOrWhiteSpace(setting.Value), "a setting must have a value");
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static async Task TestDebunkRegisterAsync()
+    {
+        var snapshot = await new WindowsEnvironmentScanner().ScanAsync();
+        var context = await new ExpertScanCoordinator().ScanAsync(
+            snapshot, measureInput: false, measureScheduler: false, measureNetwork: false, TimeSpan.Zero);
+        var cards = ExpertTweakCatalog.Evaluate(context, new WindowsMutationExecutor());
+
+        var excluded = cards.Where(card => card.Definition.Id.StartsWith("EXCLUDE-", StringComparison.Ordinal))
+            .ToArray();
+        Assert(excluded.Length >= 5, $"expected the exclusion register, found {excluded.Length} entries");
+
+        foreach (var card in excluded)
+        {
+            AssertEqual(0, card.Plan.Count, $"{card.Definition.Id} must never offer a mutation");
+            Assert(!card.CanApply, $"{card.Definition.Id} must not be applicable");
+            AssertEqual(EvidenceQuality.Disproven, card.Definition.Evidence,
+                $"{card.Definition.Id} must be marked as disproven");
+            Assert(card.Definition.Rationale.Length > 60,
+                $"{card.Definition.Id} must explain why it was excluded, not just assert it");
+        }
     }
 
     private sealed class CountingReader(ITweakStateReader inner) : ITweakStateReader

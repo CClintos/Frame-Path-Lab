@@ -41,6 +41,17 @@ What it measures that the base scan cannot:
 - **Resizable BAR** inferred from the BAR1 aperture size, which distinguishes a full-framebuffer aperture from the small legacy one.
 - **Forced platform timer** detected from the performance-counter frequency — the signature of `useplatformclock` having been forced on and never reversed, which is one of the more reliable wins available on an already-tuned system.
 - **Display adapter interrupt mode**, and **Steam transfer in progress**, which is among the most common causes of stutter in an otherwise clean session and is invisible to any settings audit.
+- **The audio render path** — shared-mode format, endpoint effects, and layered spatial processing. A modern shooter applies its own head-related transfer function; a virtual-surround renderer applies a second one, and two spatial models in series blur localisation rather than improving it. A shared format at anything other than 48 kHz also forces the audio engine to resample every buffer, softening the transient edge a footstep's direction is judged from.
+- **Local network path stability** — round-trip time and jitter to the default gateway. Bandwidth almost never limits a competitive session; jitter does, and the first hop is where a wireless link, a failing cable or a saturated uplink actually shows. This measures the local path only, not the route to any game server.
+- **Panel identity from EDID** — native timing and vertical rate range, read from the panel's own description of itself. Windows only enumerates what the current link can carry, so a display running below native reports its reduced ceiling as though it were the panel's; EDID is the independent second opinion.
+- **The driver profile that applies to the game**, read through the vendor's own settings framework: performance-state policy, render queue depth, vertical sync, frame limiting and shader cache. This is the one settings surface no Windows API exposes. Read-only — the profile is never saved to.
+- **Fast startup**, which hibernates the kernel session instead of ending it, and **interrupt affinity policy** on the display adapter, reported but never written.
+
+### Checked and excluded
+
+The catalogue also ships entries for changes that are widely recommended and do not survive scrutiny — USB selective suspend for an actively-used mouse, disabling the page file, SysMain and memory compression, turning off simultaneous multithreading, debloat scripts, legacy launch options, and network stack registry packs. Each states why it was rejected.
+
+For someone whose ranking is their income the failure mode is not a missing tweak; it is an endless spiral of applying changes that do nothing and attributing normal variance to them. Saying "this was checked and it does not help, here is why" is worth as much as another setting.
 
 Roughly thirty checks across CPU placement and power policy, timing and scheduling, GPU and presentation, display, input, background services, and network adapter latency settings. Each states the mechanism it acts on, why it helps, its trade-off, and the literal writes it will make — shown before you commit.
 
@@ -85,7 +96,11 @@ The application still does not:
 - install a driver, service, overlay or background updater;
 - change firmware, power limits or boot configuration.
 
-Two entries deserve to be called out by name. **CPU thread placement** sets the affinity of the running game process; it is reversible instantly and is lost when the game restarts. **Memory integrity** is the one item in the catalogue that trades a real kernel security guarantee for frame rate — it is detected and surfaced with its cost stated in both directions, and it is never recommended, only offered.
+Two entries deserve to be called out by name.
+
+**CPU thread placement is deliberately not applied by this application.** Setting affinity on a live game means opening a handle to it with rights that let the caller change its execution. Nothing about that is cheating, but an anti-cheat watching for processes reaching into the game cannot tell intent from behaviour, and for a player whose account is their livelihood that asymmetry is not worth a few percent. The card reports the preferred mask and the launch command that achieves the same placement without touching the process.
+
+**Memory integrity** is the one item in the catalogue that trades a real kernel security guarantee for frame rate. It is detected and surfaced with its cost stated in both directions, and it is never recommended, only offered.
 
 Imported captures are observational. A single capture cannot produce a causal Keep/Revert decision, and software timing fields are not presented as physical mouse-to-photon latency. Every tweak in the catalogue is an experiment with an uncertain benefit on any particular machine, not a guarantee.
 

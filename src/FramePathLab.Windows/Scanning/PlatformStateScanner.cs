@@ -82,6 +82,105 @@ public static partial class PlatformStateScanner
     }
 
     /// <summary>
+    /// Fast startup hibernates the kernel session instead of shutting it down, so a "shut down"
+    /// followed by a power-on resumes the previous kernel state and its driver state with it. That
+    /// is why a problem survives a shutdown but disappears after a restart.
+    /// </summary>
+    public static bool? ReadFastStartup()
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Control\Session Manager\Power", writable: false);
+            return key?.GetValue("HiberbootEnabled") is int value ? value != 0 : null;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Reads whether an interrupt affinity policy has been pinned onto the display adapter. An
+    /// explicit policy here steers device interrupts onto chosen processors; it is a real lever and
+    /// a real way to make a machine worse, so it is only ever reported, never written.
+    /// </summary>
+    public static (bool HasPolicy, string Observation) ReadInterruptAffinityPolicy()
+    {
+        try
+        {
+            using var pci = Registry.LocalMachine.OpenSubKey(PciEnumPath, writable: false);
+            if (pci is null)
+            {
+                return (false, "PCI device enumeration could not be read.");
+            }
+
+            foreach (var deviceName in pci.GetSubKeyNames())
+            {
+                using var device = pci.OpenSubKey(deviceName, writable: false);
+                foreach (var instanceName in device?.GetSubKeyNames() ?? [])
+                {
+                    using var instance = device!.OpenSubKey(instanceName, writable: false);
+                    if (instance?.GetValue("ClassGUID") as string is not { } classGuid
+                        || !classGuid.Equals(DisplayClassGuid, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    using var policy = Registry.LocalMachine.OpenSubKey(
+                        $@"{PciEnumPath}\{deviceName}\{instanceName}\Device Parameters\Interrupt Management\Affinity Policy",
+                        writable: false);
+                    if (policy is null)
+                    {
+                        return (false, "No interrupt affinity policy is set on the display adapter.");
+                    }
+
+                    var devicePolicy = policy.GetValue("DevicePolicy");
+                    var assignment = policy.GetValue("AssignmentSetOverride");
+                    return devicePolicy is null && assignment is null
+                        ? (false, "An affinity policy key exists but carries no policy values.")
+                        : (true,
+                            $"An interrupt affinity policy is set (DevicePolicy {devicePolicy ?? "unset"}, "
+                            + $"AssignmentSetOverride {(assignment is byte[] bytes ? Convert.ToHexString(bytes) : assignment ?? "unset")}).");
+                }
+            }
+
+            return (false, "No display adapter was found under PCI enumeration.");
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+        {
+            return (false, $"Interrupt affinity policy could not be read: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Reads the real-time scanning exclusion list. Whether an exclusion belongs here is the
+    /// user's call; this only reports what is already configured.
+    /// </summary>
+    public static (bool Readable, IReadOnlyList<string> Paths, string Observation) ReadDefenderExclusions()
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths", writable: false);
+            if (key is null)
+            {
+                return (false, [], "The exclusion list is not readable without elevation on this system.");
+            }
+
+            var paths = key.GetValueNames();
+            return (true, paths,
+                paths.Length == 0
+                    ? "No real-time scanning path exclusions are configured."
+                    : $"{paths.Length} path exclusion(s) configured.");
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+        {
+            return (false, [], "The exclusion list is not readable without elevation on this system.");
+        }
+    }
+
+    /// <summary>
     /// Detects an in-flight Steam transfer by comparing downloaded against total bytes in every
     /// app manifest across every resolved library.
     /// </summary>
