@@ -161,4 +161,11 @@ public sealed record ExpertScanContext(
     SystemLatencyReport? Latency,
     IReadOnlyList<NetworkAdapterState> NetworkAdapters,
     int? GameProcessId,
-    string GameExecutableName);
+    string GameExecutableName,
+    MemoryConfiguration Memory,
+    SteamActivity Steam,
+    bool ForcedPlatformClock,
+    long PerformanceCounterFrequency,
+    bool? GpuMessageSignalledInterrupts,
+    string? GpuInterruptRegistryPath,
+    string GpuInterruptObservation);

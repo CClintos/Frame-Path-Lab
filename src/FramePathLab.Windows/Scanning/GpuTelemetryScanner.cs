@@ -92,7 +92,7 @@ public static class GpuTelemetryScanner
             reading.MaxLinkGeneration,
             reading.PerformanceState,
             reading.ThrottleReasons,
-            null,
+            reading.ResizableBarActive,
             hardwareScheduling.Supported,
             hardwareScheduling.Enabled,
             reading.Observation);
@@ -194,6 +194,7 @@ internal sealed record NvmlDeviceReading(
     int? MaxLinkGeneration,
     string? PerformanceState,
     IReadOnlyList<string> ThrottleReasons,
+    bool? ResizableBarActive,
     string Observation);
 
 /// <summary>Runtime binding to the NVIDIA Management Library that ships with the display driver.</summary>
@@ -266,6 +267,7 @@ internal static class NvmlSession
         var performanceState = Bind<NvmlDeviceGetUInt>(library, "nvmlDeviceGetPerformanceState");
         var throttleReasons = Bind<NvmlDeviceGetULong>(library, "nvmlDeviceGetCurrentClocksThrottleReasons")
                               ?? Bind<NvmlDeviceGetULong>(library, "nvmlDeviceGetCurrentClocksEventReasons");
+        var bar1Memory = Bind<NvmlDeviceGetBar1Memory>(library, "nvmlDeviceGetBAR1MemoryInfo");
 
         var devices = new List<NvmlDeviceReading>();
         for (uint index = 0; index < count; index++)
@@ -310,6 +312,16 @@ internal static class NvmlSession
                 observation.Append($", performance state P{pstate}");
             }
 
+            // Without resizable BAR the host can only see a small aperture into video memory,
+            // classically 256 MiB. A BAR1 region approaching the card's whole framebuffer is the
+            // unambiguous signature of the feature being active for this device.
+            bool? resizableBar = null;
+            if (bar1Memory is not null && bar1Memory(device, out var bar1) == NvmlSuccess && bar1.Total > 0)
+            {
+                resizableBar = bar1.Total > 1024UL * 1024 * 1024;
+                observation.Append($", BAR1 aperture {bar1.Total / 1024 / 1024} MiB");
+            }
+
             observation.Append(reasons.Count > 0
                 ? $"; limiting: {string.Join(", ", reasons)}."
                 : "; no clock limiter reported at scan time.");
@@ -322,6 +334,7 @@ internal static class NvmlSession
                 maximumGeneration,
                 pstate.HasValue ? $"P{pstate}" : null,
                 reasons,
+                resizableBar,
                 observation.ToString()));
         }
 
@@ -357,4 +370,15 @@ internal static class NvmlSession
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int NvmlDeviceGetULong(nint device, out ulong value);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NvmlDeviceGetBar1Memory(nint device, out NvmlBar1Memory memory);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NvmlBar1Memory
+    {
+        public ulong Total;
+        public ulong Free;
+        public ulong Used;
+    }
 }

@@ -40,6 +40,24 @@ public sealed record CpuTopology(
     /// <summary>True when the CPU is being held below its rated maximum by policy or thermals.</summary>
     public bool IsClockLimited
         => MaxMhz is > 0 && MhzLimit is > 0 && MhzLimit < MaxMhz;
+
+    /// <summary>
+    /// A die carrying vertically stacked cache holds several times the last-level cache per core of
+    /// an ordinary part. That extra silicon sits over the cores and constrains the voltage and
+    /// thermal ceiling, so such a part trades peak frequency for cache and reacts differently to
+    /// power-policy floors than a conventional CPU does.
+    /// </summary>
+    public bool HasStackedCache
+        => CoreGroups.Any(group =>
+            group.PhysicalCoreCount > 0
+            && group.LastLevelCacheBytes / (ulong)group.PhysicalCoreCount >= 8UL * 1024 * 1024);
+
+    public double LargestCachePerCoreMiB
+        => CoreGroups.Count == 0
+            ? 0
+            : CoreGroups.Max(group => group.PhysicalCoreCount > 0
+                ? group.LastLevelCacheBytes / (double)group.PhysicalCoreCount / 1024 / 1024
+                : 0);
 }
 
 public sealed record GpuTelemetry(
@@ -138,6 +156,51 @@ public sealed record SystemLatencyReport(
     /// </summary>
     public bool IsCoarseTimer => CurrentTimerResolutionMs > 1.2;
 }
+
+public sealed record MemoryModule(
+    string DeviceLocator,
+    string BankLocator,
+    string PartNumber,
+    string Manufacturer,
+    long SizeMegabytes,
+    int RatedSpeedMts,
+    int ConfiguredSpeedMts);
+
+public sealed record MemoryConfiguration(
+    bool Available,
+    IReadOnlyList<MemoryModule> Modules,
+    long TotalMegabytes,
+    int ConfiguredSpeedMts,
+    int RatedSpeedMts,
+    int PopulatedChannels,
+    string UnavailableReason)
+{
+    public static MemoryConfiguration Unavailable(string reason)
+        => new(false, [], 0, 0, 0, 0, reason);
+
+    /// <summary>
+    /// True when the modules are running below the speed they advertise, which is what a kit looks
+    /// like when its rated profile was never enabled in firmware.
+    /// </summary>
+    public bool IsBelowRatedSpeed
+        => Available && RatedSpeedMts > 0 && ConfiguredSpeedMts > 0
+           && ConfiguredSpeedMts < RatedSpeedMts - 40;
+
+    /// <summary>A single populated channel halves available bandwidth regardless of module count.</summary>
+    public bool IsSingleChannel => Available && Modules.Count > 0 && PopulatedChannels <= 1;
+
+    public string Describe()
+        => !Available
+            ? UnavailableReason
+            : $"{Modules.Count} module(s), {TotalMegabytes / 1024} GiB across {PopulatedChannels} channel(s), "
+              + $"running {ConfiguredSpeedMts} MT/s of {RatedSpeedMts} MT/s rated";
+}
+
+/// <summary>Whether Steam is currently moving bytes, which is a common cause of in-game stutter.</summary>
+public sealed record SteamActivity(
+    bool DownloadInProgress,
+    IReadOnlyList<string> ActiveDownloads,
+    string Observation);
 
 public sealed record NetworkAdapterState(
     string Name,

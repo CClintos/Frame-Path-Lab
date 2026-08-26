@@ -144,7 +144,22 @@ internal static class Program
         var context = await BuildContextAsync(measureInput);
         var cards = BuildEngine().Evaluate(context);
         Console.WriteLine(JsonSerializer.Serialize(
-            new { context.Cpu, context.Gpus, context.PrimaryTiming, context.Input, context.Latency, Tweaks = cards },
+            new
+            {
+                context.Cpu,
+                context.Gpus,
+                context.PrimaryTiming,
+                context.Input,
+                context.Latency,
+                context.Memory,
+                context.Steam,
+                context.ForcedPlatformClock,
+                context.PerformanceCounterFrequency,
+                context.GpuMessageSignalledInterrupts,
+                context.GpuInterruptObservation,
+                context.NetworkAdapters,
+                Tweaks = cards
+            },
             JsonOptions));
         return 0;
     }

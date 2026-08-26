@@ -48,7 +48,10 @@ internal static class Program
         ("Delivery analyzer reads vertical sync from the capture", TestDeliverySyncIntervalAsync),
         ("CPU topology resolves core groups", TestCpuTopologyAsync),
         ("Display timing returns an exact rational refresh", TestDisplayTimingAsync),
-        ("Expert catalogue evaluates without mutating", TestExpertCatalogueReadOnlyAsync)
+        ("Expert catalogue evaluates without mutating", TestExpertCatalogueReadOnlyAsync),
+        ("SMBIOS reports a self-consistent memory configuration", TestSmbiosMemoryAsync),
+        ("Stacked cache is detected from cache per core", TestStackedCacheDetectionAsync),
+        ("Platform timer frequency is read and classified", TestPlatformTimerAsync)
     ];
 
     public static async Task<int> Main()
@@ -1026,6 +1029,69 @@ internal static class Program
             Assert(!string.IsNullOrWhiteSpace(card.Definition.Mechanism), $"{card.Definition.Id} has no mechanism");
             Assert(!string.IsNullOrWhiteSpace(card.Definition.Tradeoff), $"{card.Definition.Id} has no trade-off");
         }
+    }
+
+    private static Task TestSmbiosMemoryAsync()
+    {
+        var memory = SmbiosMemoryScanner.Scan();
+        if (!memory.Available)
+        {
+            // Firmware tables are not guaranteed to be readable in every environment; an
+            // unavailable result must still be internally coherent rather than half-populated.
+            Assert(memory.Modules.Count == 0, "an unavailable reading must carry no modules");
+            Assert(!string.IsNullOrWhiteSpace(memory.UnavailableReason), "unavailable must state a reason");
+            Assert(!memory.IsBelowRatedSpeed && !memory.IsSingleChannel,
+                "an unavailable reading must not assert a fault");
+            return Task.CompletedTask;
+        }
+
+        Assert(memory.Modules.Count > 0, "an available reading must carry at least one module");
+        Assert(memory.TotalMegabytes > 0, "total size must be positive");
+        Assert(
+            memory.TotalMegabytes == memory.Modules.Sum(module => module.SizeMegabytes),
+            "total size must equal the sum of the modules");
+        Assert(memory.PopulatedChannels > 0, "populated channels must be positive when modules exist");
+
+        foreach (var module in memory.Modules)
+        {
+            Assert(module.SizeMegabytes > 0, "a reported module must have a positive size");
+            Assert(module.SizeMegabytes <= 1024L * 1024, $"implausible module size {module.SizeMegabytes} MiB");
+            Assert(module.ConfiguredSpeedMts is >= 0 and < 20000, "implausible configured speed");
+            Assert(module.RatedSpeedMts is >= 0 and < 20000, "implausible rated speed");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static CpuTopology BuildTopology(int physicalCores, ulong lastLevelCacheBytes)
+        => new(
+            "TestVendor", "Test CPU", physicalCores, physicalCores * 2, true, false,
+            [new CoreGroup(0, (1UL << (physicalCores * 2)) - 1, physicalCores, physicalCores * 2, lastLevelCacheBytes, 0)],
+            null, "test", 0, (1UL << (physicalCores * 2)) - 1, null, null, null, null, []);
+
+    private static Task TestStackedCacheDetectionAsync()
+    {
+        // 8 cores sharing 96 MiB is the stacked-cache signature; 8 cores sharing 32 MiB is not.
+        var stacked = BuildTopology(8, 96UL * 1024 * 1024);
+        Assert(stacked.HasStackedCache, "96 MiB across 8 cores must read as stacked cache");
+        AssertNear(12, stacked.LargestCachePerCoreMiB, 0.01, "cache per core");
+
+        var conventional = BuildTopology(8, 32UL * 1024 * 1024);
+        Assert(!conventional.HasStackedCache, "32 MiB across 8 cores must not read as stacked cache");
+
+        var hybridRing = BuildTopology(10, 12UL * 1024 * 1024);
+        Assert(!hybridRing.HasStackedCache, "12 MiB across 10 cores must not read as stacked cache");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestPlatformTimerAsync()
+    {
+        var (forced, frequency) = PlatformStateScanner.ReadPlatformTimer();
+        Assert(frequency > 0, "performance counter frequency must be positive");
+
+        // The classification must agree with the frequency it was derived from, in both directions.
+        Assert(forced == (frequency == 14_318_180), "forced-clock classification must match the frequency");
+        return Task.CompletedTask;
     }
 
     private sealed class CountingReader(ITweakStateReader inner) : ITweakStateReader

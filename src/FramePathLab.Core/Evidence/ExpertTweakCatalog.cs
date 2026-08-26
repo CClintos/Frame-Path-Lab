@@ -108,7 +108,14 @@ public static class ExpertTweakCatalog
             PollingIntegrity(context),
             GameDvr(reader),
             GameMode(reader),
-            MemoryIntegrity(reader)
+            MemoryIntegrity(reader),
+            MemoryProfile(context),
+            MemoryChannels(context),
+            StackedCacheProfile(context),
+            ResizableBar(context),
+            GpuInterruptMode(context, reader),
+            ForcedPlatformClock(context),
+            SteamTransfer(context)
         };
 
         cards.AddRange(NetworkTweaks(context, reader));
@@ -237,20 +244,34 @@ public static class ExpertTweakCatalog
             context);
 
     private static ExpertTweakCard MinimumProcessorState(ExpertScanContext context, ITweakStateReader reader)
-        => PowerPolicyCard(
+    {
+        // On a stacked-cache part the power budget is the scarce resource, not the ramp. Holding
+        // every core at its floor spends that budget on idle cores and competes with the boost
+        // headroom the active ones need, so the recommendation stops being a default there.
+        var stacked = context.Cpu.HasStackedCache;
+        return PowerPolicyCard(
             "CPU-MINSTATE-001",
             "Minimum processor performance state",
             "The processor performance floor governs how far the CPU is allowed to drop between bursts, and how "
             + "far it must ramp back up when a frame arrives.",
             "Ramp-up is not instant. A high floor removes the ramp from the frame path, which shows up in 1% lows "
             + "rather than in average frame rate.",
-            "The CPU holds higher clocks at idle, raising power draw, temperature and fan noise. On a "
-            + "thermally-limited machine this can reduce sustained boost rather than improve it.",
+            stacked
+                ? "This CPU carries stacked cache, so it is power- and thermally-limited by design. Raising the "
+                + "floor keeps idle cores clocked and spends budget the boost algorithm would otherwise give to "
+                + "the cores running the frame. Benchmark both settings; do not assume the higher floor wins."
+                : "The CPU holds higher clocks at idle, raising power draw, temperature and fan noise. On a "
+                + "thermally-limited machine this can reduce sustained boost rather than improve it.",
             MinProcessorState,
             100,
             "100%",
             reader,
-            context);
+            context,
+            stacked ? TweakRisk.High : TweakRisk.Moderate,
+            stacked
+                ? " On a stacked-cache CPU this is an A/B, not a recommendation."
+                : string.Empty);
+    }
 
     private static ExpertTweakCard BoostMode(ExpertScanContext context, ITweakStateReader reader)
         => PowerPolicyCard(
@@ -277,7 +298,9 @@ public static class ExpertTweakCatalog
         uint desired,
         string desiredLabel,
         ITweakStateReader reader,
-        ExpertScanContext context)
+        ExpertScanContext context,
+        TweakRisk risk = TweakRisk.Moderate,
+        string detailSuffix = "")
     {
         var definition = new ExpertTweakDefinition(
             id,
@@ -286,7 +309,7 @@ public static class ExpertTweakCatalog
             mechanism,
             rationale,
             tradeoff,
-            TweakRisk.Moderate,
+            risk,
             TweakScope.Machine,
             EvidenceQuality.Moderate,
             false,
@@ -335,7 +358,8 @@ public static class ExpertTweakCatalog
                 matches ? TweakState.Optimal : TweakState.Suboptimal,
                 current,
                 desiredLabel,
-                matches ? "Already at the recommended value." : "The active scheme is below the recommended value."),
+                (matches ? "Already at the recommended value." : "The active scheme is below the recommended value.")
+                + detailSuffix),
             matches ? [] : [plan],
             null);
     }
@@ -1424,6 +1448,340 @@ public static class ExpertTweakCatalog
                     : "Memory integrity is currently off. Re-enabling it restores kernel driver verification."),
             active ? [plan] : [],
             null);
+    }
+
+    // ---- Memory and platform ---------------------------------------------------------------
+
+    private static ExpertTweakCard MemoryProfile(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "MEMORY-PROFILE-001",
+            "Memory",
+            "Rated memory profile",
+            "Memory modules boot at a conservative JEDEC speed until the rated profile stored on the module is "
+            + "explicitly enabled in firmware.",
+            "A cache-and-latency-bound engine responds to memory speed more strongly than to almost anything else "
+            + "on this list. A kit sitting at its fallback speed instead of its rated profile gives up a large "
+            + "share of its 1% lows, and no Windows setting can recover it.",
+            "Enabling the rated profile is a firmware change made by the user. It is a factory overclock, so it "
+            + "must be validated for stability rather than assumed.",
+            TweakRisk.Low,
+            TweakScope.Firmware,
+            EvidenceQuality.Strong,
+            false,
+            false,
+            false,
+            []);
+
+        var memory = context.Memory;
+        if (!memory.Available || memory.RatedSpeedMts == 0 || memory.ConfiguredSpeedMts == 0)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(TweakState.Unknown, memory.Describe(), "Running at the rated profile speed",
+                    "Firmware did not report both a rated and a configured memory speed."),
+                [],
+                null);
+        }
+
+        var below = memory.IsBelowRatedSpeed;
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                below ? TweakState.Suboptimal : TweakState.Optimal,
+                $"{memory.ConfiguredSpeedMts} MT/s configured against {memory.RatedSpeedMts} MT/s rated",
+                $"{memory.RatedSpeedMts} MT/s",
+                below
+                    ? $"The modules advertise {memory.RatedSpeedMts} MT/s but are running at "
+                      + $"{memory.ConfiguredSpeedMts} MT/s. Enable the rated profile (XMP, DOCP or EXPO) in "
+                      + "firmware. On an infinity-fabric platform also confirm the fabric clock stays "
+                      + "synchronous with the memory clock, because a fallback to a divided ratio costs more "
+                      + "latency than the speed increase recovers."
+                    : "The modules are running at the speed they advertise. Note that some firmware reports "
+                      + "both fields identically once a profile is applied, so treat a match as consistent "
+                      + "rather than as proof."),
+            [],
+            below ? "Memory speed is set in firmware and is never written by this application." : null);
+    }
+
+    private static ExpertTweakCard MemoryChannels(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "MEMORY-CHANNELS-001",
+            "Memory",
+            "Memory channel population",
+            "Modules must occupy the correct slot pair for the controller to interleave across every available "
+            + "channel.",
+            "A configuration that populates only one channel halves memory bandwidth regardless of how many "
+            + "modules are installed or how fast they are rated.",
+            "Diagnostic only. Correcting it means physically moving modules to the slots the board's manual "
+            + "specifies.",
+            TweakRisk.Low,
+            TweakScope.Firmware,
+            EvidenceQuality.Strong,
+            false,
+            false,
+            false,
+            []);
+
+        var memory = context.Memory;
+        if (!memory.Available)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(TweakState.Unknown, memory.Describe(), "All channels populated",
+                    "Firmware memory tables were not available."),
+                [],
+                null);
+        }
+
+        var slots = string.Join(", ", memory.Modules.Select(module =>
+            $"{module.DeviceLocator} {module.SizeMegabytes / 1024} GiB"));
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                memory.IsSingleChannel ? TweakState.Suboptimal : TweakState.Optimal,
+                $"{memory.PopulatedChannels} channel(s) — {slots}",
+                "At least two populated channels",
+                memory.IsSingleChannel
+                    ? "Only one channel is populated. Move the modules to the slot pair the board's manual "
+                      + "specifies for dual-channel operation."
+                    : $"Modules are spread across {memory.PopulatedChannels} channels."),
+            [],
+            null);
+    }
+
+    private static ExpertTweakCard StackedCacheProfile(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "CPU-STACKED-CACHE-001",
+            "CPU",
+            "Stacked-cache CPU profile",
+            "A CPU carrying vertically stacked cache holds several times the last-level cache per core of a "
+            + "conventional part. That silicon sits above the cores and lowers the voltage and thermal ceiling "
+            + "the boost algorithm is allowed to use.",
+            "Such a part wins through cache residency rather than through frequency. That changes which tuning "
+            + "levers are worth pulling: the cache already absorbs most memory traffic, the multiplier is "
+            + "locked, and forcing every core to a high performance floor spends the limited power budget on "
+            + "idle cores instead of leaving it for the ones running the frame.",
+            "Informational. The tuning levers for this class of part live in firmware, not in Windows.",
+            TweakRisk.Low,
+            TweakScope.Firmware,
+            EvidenceQuality.Moderate,
+            false,
+            false,
+            false,
+            [MicrosoftProcessorPolicy]);
+
+        var cpu = context.Cpu;
+        if (!cpu.HasStackedCache)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(
+                    TweakState.NotApplicable,
+                    $"{cpu.LargestCachePerCoreMiB:0.#} MiB last-level cache per core",
+                    "Not applicable",
+                    "This CPU does not carry the stacked-cache signature."),
+                [],
+                null);
+        }
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                TweakState.Optimal,
+                $"{cpu.Brand} — {cpu.LargestCachePerCoreMiB:0.#} MiB last-level cache per core across "
+                + $"{cpu.CoreGroups.Count} group(s)",
+                "Tune in firmware, not in Windows",
+                "Stacked cache detected. Because every core shares one cache domain here, thread placement has "
+                + "nothing to choose between and this catalogue offers no affinity change. The levers that do "
+                + "matter are the undervolt curve and memory speed in firmware. Treat the processor performance "
+                + "floor below as an A/B rather than a default, because a raised floor competes with boost "
+                + "headroom on a power- and thermally-limited part."),
+            [],
+            null);
+    }
+
+    private static ExpertTweakCard ResizableBar(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "GPU-REBAR-001",
+            "GPU",
+            "Resizable BAR",
+            "Without a resizable base address register the host can only address video memory through a small "
+            + "aperture, classically 256 MiB, and must move data through it in pieces.",
+            "A full-size aperture removes that staging step from asset and buffer updates. Vendors enable it per "
+            + "title rather than globally, so a card can support it, have it enabled in firmware, and still not "
+            + "use it for a given game.",
+            "Requires firmware support and above-4G decoding. The effect is title-dependent and can be neutral "
+            + "or slightly negative in some engines.",
+            TweakRisk.Low,
+            TweakScope.Firmware,
+            EvidenceQuality.Moderate,
+            false,
+            false,
+            false,
+            []);
+
+        var gpu = context.Gpus.FirstOrDefault(device => device.ResizableBarActive.HasValue);
+        if (gpu is null)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(TweakState.Unknown, "Aperture size not reported", "Full-size aperture",
+                    "No telemetry source reported the BAR1 aperture for this adapter."),
+                [],
+                null);
+        }
+
+        var active = gpu.ResizableBarActive == true;
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                active ? TweakState.Optimal : TweakState.Suboptimal,
+                active ? "Full-size aperture in use" : "Small legacy aperture in use",
+                "Full-size aperture",
+                active
+                    ? "The host can address the full framebuffer."
+                    : "The card is using the small legacy aperture. Enable resizable BAR and above-4G decoding "
+                      + "in firmware, then re-scan."),
+            [],
+            active ? null : "Resizable BAR is enabled in firmware and is never written by this application.");
+    }
+
+    private static ExpertTweakCard GpuInterruptMode(ExpertScanContext context, ITweakStateReader reader)
+    {
+        var definition = new ExpertTweakDefinition(
+            "GPU-MSI-001",
+            "GPU",
+            "Display adapter interrupt mode",
+            "Message-signalled interrupts let a device raise an interrupt by writing to memory rather than by "
+            + "asserting a shared physical line, which removes the shared-line arbitration from the path.",
+            "Line-based interrupts on a display adapter can lengthen deferred procedure calls and show up as "
+            + "periodic frame-delivery hitches. Modern display drivers already default to message-signalled "
+            + "interrupts, so this check usually confirms rather than corrects.",
+            "Interrupt configuration is a driver-level change that takes effect after a restart. An incorrect "
+            + "value on a device that does not support the mode can prevent the device from starting.",
+            TweakRisk.High,
+            TweakScope.Machine,
+            EvidenceQuality.Weak,
+            true,
+            true,
+            false,
+            []);
+
+        if (context.GpuMessageSignalledInterrupts is null || context.GpuInterruptRegistryPath is null)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(
+                    TweakState.Unknown,
+                    context.GpuInterruptObservation,
+                    "Message-signalled interrupts",
+                    "No explicit value is set, so the driver default applies. FramePath Lab will not write a "
+                    + "value into an unset default it cannot verify the device supports."),
+                [],
+                null);
+        }
+
+        if (context.GpuMessageSignalledInterrupts == true)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(TweakState.Optimal, "Message-signalled interrupts enabled",
+                    "Message-signalled interrupts", context.GpuInterruptObservation),
+                [],
+                null);
+        }
+
+        var plan = new MutationPlan(
+            "GPU-MSI-001.value",
+            MutationKind.RegistryValue,
+            context.GpuInterruptRegistryPath,
+            "MSISupported",
+            "1",
+            "DWord",
+            "Enable message-signalled interrupts for the display adapter");
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                TweakState.Suboptimal,
+                "Line-based interrupts explicitly selected",
+                "Message-signalled interrupts",
+                context.GpuInterruptObservation
+                + " This was explicitly turned off, which is unusual on a modern adapter."),
+            [plan],
+            null);
+    }
+
+    private static ExpertTweakCard ForcedPlatformClock(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "TIMER-PLATFORM-001",
+            "Timing",
+            "Forced platform timer",
+            "Boot configuration can force the high-precision event timer to back the performance counter instead "
+            + "of letting Windows use the processor's invariant timestamp counter.",
+            "Reading the platform timer costs far more than reading the timestamp counter, and engines query it "
+            + "thousands of times a second. Forcing it is a change tweak guides recommend and rarely reverse; "
+            + "removing it is one of the few reliable wins available on an already-tuned system.",
+            "Diagnostic only. The fix is to clear the forced boot option, which this application does not write.",
+            TweakRisk.Low,
+            TweakScope.Machine,
+            EvidenceQuality.Moderate,
+            false,
+            true,
+            false,
+            [MicrosoftTimers]);
+
+        var forced = context.ForcedPlatformClock;
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                forced ? TweakState.Suboptimal : TweakState.Optimal,
+                $"Performance counter frequency {context.PerformanceCounterFrequency:N0} Hz",
+                "Invariant timestamp counter (10,000,000 Hz)",
+                forced
+                    ? "The counter is running at the legacy platform-timer frequency, which means the platform "
+                      + "clock has been forced on in boot configuration. Clear it from an elevated prompt with "
+                      + "\"bcdedit /deletevalue useplatformclock\" and restart, then re-scan."
+                    : "The performance counter is using the normal invariant timestamp path; no forced platform "
+                      + "clock is in effect."),
+            [],
+            forced ? "Boot configuration is never written by this application." : null);
+    }
+
+    private static ExpertTweakCard SteamTransfer(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "STEAM-TRANSFER-001",
+            "Background",
+            "Steam transfer in progress",
+            "A content transfer saturates disk writes and network receive processing while it runs.",
+            "This is one of the most common causes of stutter in an otherwise clean session, and it is entirely "
+            + "invisible in a settings audit. On a fast connection the disk and decompression cost is usually "
+            + "the larger half of the problem, not the bandwidth.",
+            "Diagnostic only. Pause the transfer in Steam before a session.",
+            TweakRisk.Low,
+            TweakScope.CurrentUser,
+            EvidenceQuality.Strong,
+            false,
+            false,
+            false,
+            []);
+
+        var steam = context.Steam;
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                steam.DownloadInProgress ? TweakState.Suboptimal : TweakState.Optimal,
+                steam.DownloadInProgress ? string.Join("; ", steam.ActiveDownloads) : "No transfer in progress",
+                "No transfer during play",
+                steam.Observation),
+            [],
+            steam.DownloadInProgress ? "Pause the transfer in Steam; this application does not control it." : null);
     }
 
     private static IEnumerable<ExpertTweakCard> NetworkTweaks(ExpertScanContext context, ITweakStateReader reader)

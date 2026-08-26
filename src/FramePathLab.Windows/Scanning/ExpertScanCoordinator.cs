@@ -56,6 +56,10 @@ public sealed class ExpertScanCoordinator
             : BuildUnmeasuredInputReport();
 
         var primary = timings.FirstOrDefault(timing => timing.IsPrimary) ?? timings.FirstOrDefault();
+        var memory = SmbiosMemoryScanner.Scan();
+        var steam = PlatformStateScanner.ReadSteamActivity();
+        var (forcedClock, counterFrequency) = PlatformStateScanner.ReadPlatformTimer();
+        var (msiEnabled, msiPath, msiObservation) = PlatformStateScanner.ReadGpuInterruptMode();
 
         return new ExpertScanContext(
             environment,
@@ -66,7 +70,14 @@ public sealed class ExpertScanCoordinator
             latency,
             network,
             gameProcessId,
-            _gameExecutableName);
+            _gameExecutableName,
+            memory,
+            steam,
+            forcedClock,
+            counterFrequency,
+            msiEnabled,
+            msiPath,
+            msiObservation);
     }
 
     /// <summary>
