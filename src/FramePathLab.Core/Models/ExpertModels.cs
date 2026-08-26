@@ -207,4 +207,9 @@ public sealed record ExpertScanContext(
     bool DefenderExclusionsReadable,
     IReadOnlyList<string> DefenderExclusions,
     string DefenderObservation,
-    bool OverlayProcessObserved);
+    bool OverlayProcessObserved,
+    BootTimingState BootTiming,
+    bool? NetworkMessageSignalledInterrupts,
+    string NetworkInterruptObservation,
+    bool? SpeculativeMitigationsOverridden,
+    string SpeculativeMitigationObservation);

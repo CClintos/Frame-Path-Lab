@@ -60,6 +60,7 @@ public static class NetworkAdapterScanner
                 var description = adapterKey.GetValue("DriverDesc") as string ?? netInterface!.Description;
                 var moderation = ReadInt(adapterKey, "*InterruptModeration");
                 var flowControl = ReadInt(adapterKey, "*FlowControl");
+                var coalescing = ReadInt(adapterKey, "*RscIPv4");
                 var energy = EnergyEfficiencyNames
                     .Select(name => ReadInt(adapterKey, name))
                     .FirstOrDefault(value => value.HasValue);
@@ -73,7 +74,8 @@ public static class NetworkAdapterScanner
                     moderation,
                     energy,
                     flowControl,
-                    BuildObservation(moderation, energy, flowControl)));
+                    coalescing,
+                    BuildObservation(moderation, energy, flowControl, coalescing)));
             }
         }
         catch (UnauthorizedAccessException)
@@ -88,7 +90,7 @@ public static class NetworkAdapterScanner
         return results;
     }
 
-    private static string BuildObservation(int? moderation, int? energy, int? flowControl)
+    private static string BuildObservation(int? moderation, int? energy, int? flowControl, int? coalescing)
     {
         var parts = new List<string>
         {
@@ -108,6 +110,11 @@ public static class NetworkAdapterScanner
         if (flowControl.HasValue)
         {
             parts.Add(flowControl.Value == 0 ? "flow control off" : "flow control on");
+        }
+
+        if (coalescing.HasValue)
+        {
+            parts.Add(coalescing.Value == 0 ? "receive coalescing off" : "receive coalescing on");
         }
 
         return string.Join("; ", parts) + ".";

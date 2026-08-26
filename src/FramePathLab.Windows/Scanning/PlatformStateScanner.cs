@@ -80,6 +80,167 @@ public static partial class PlatformStateScanner
         }
     }
 
+    private const string NetworkClassGuid = "{4d36e972-e325-11ce-bfc1-08002be10318}";
+
+    /// <summary>
+    /// Reads the interrupt mode of the network adapter carrying live traffic. Same reasoning as the
+    /// display adapter: an absent value means the driver default applies, not that the feature is
+    /// off, so it is reported as unset rather than as something to fix.
+    /// </summary>
+    public static (bool? MsiEnabled, string Observation) ReadNetworkInterruptMode()
+    {
+        try
+        {
+            using var pci = Registry.LocalMachine.OpenSubKey(PciEnumPath, writable: false);
+            if (pci is null)
+            {
+                return (null, "PCI device enumeration could not be read.");
+            }
+
+            foreach (var deviceName in pci.GetSubKeyNames())
+            {
+                using var device = pci.OpenSubKey(deviceName, writable: false);
+                foreach (var instanceName in device?.GetSubKeyNames() ?? [])
+                {
+                    using var instance = device!.OpenSubKey(instanceName, writable: false);
+                    if (instance?.GetValue("ClassGUID") as string is not { } classGuid
+                        || !classGuid.Equals(NetworkClassGuid, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var description = instance.GetValue("DeviceDesc") as string ?? deviceName;
+                    using var msi = Registry.LocalMachine.OpenSubKey(
+                        $@"{PciEnumPath}\{deviceName}\{instanceName}"
+                        + @"\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties",
+                        writable: false);
+
+                    return msi?.GetValue("MSISupported") is int value
+                        ? (value != 0, $"{Trim(description)}: MSISupported is explicitly {value}.")
+                        : (null, $"{Trim(description)}: no explicit interrupt-mode value; the driver default applies.");
+                }
+            }
+
+            return (null, "No wired network adapter was found under PCI enumeration.");
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+        {
+            return (null, $"Network interrupt mode could not be read: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Reads the boot options that affect timing directly, rather than inferring them from the
+    /// performance-counter frequency. This needs elevation, so a failure is reported as unread
+    /// rather than as "nothing is set" — those are very different claims.
+    /// </summary>
+    public static BootTimingState ReadBootTiming()
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = "bcdedit.exe",
+                Arguments = "/enum {current}",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+
+            if (process is null)
+            {
+                return BootTimingState.Unreadable("The boot configuration reader could not be started.");
+            }
+
+            var output = process.StandardOutput.ReadToEnd();
+            if (!process.WaitForExit(10_000))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Already gone; nothing to clean up.
+                }
+
+                return BootTimingState.Unreadable("The boot configuration reader did not complete.");
+            }
+
+            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
+            {
+                return BootTimingState.Unreadable(
+                    "Boot configuration requires an elevated session; it was not read.");
+            }
+
+            return new BootTimingState(
+                true,
+                ReadFlag(output, "useplatformclock"),
+                ReadFlag(output, "useplatformtick"),
+                ReadFlag(output, "disabledynamictick"),
+                ReadWord(output, "tscsyncpolicy"),
+                "Boot configuration read.");
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or IOException
+                                             or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return BootTimingState.Unreadable($"Boot configuration could not be read: {exception.Message}");
+        }
+    }
+
+    private static bool? ReadFlag(string output, string option)
+    {
+        var match = Regex.Match(
+            output, $@"^\s*{Regex.Escape(option)}\s+(Yes|No)\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.CultureInvariant,
+            TimeSpan.FromSeconds(1));
+        return match.Success ? match.Groups[1].Value.Equals("Yes", StringComparison.OrdinalIgnoreCase) : null;
+    }
+
+    private static string? ReadWord(string output, string option)
+    {
+        var match = Regex.Match(
+            output, $@"^\s*{Regex.Escape(option)}\s+(\w+)\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.CultureInvariant,
+            TimeSpan.FromSeconds(1));
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
+    /// <summary>
+    /// Reads whether the speculative-execution mitigations have been overridden. Reported only:
+    /// this is a processor-level security guarantee, and turning it off is not a change this
+    /// application makes on someone's behalf.
+    /// </summary>
+    public static (bool? Overridden, string Observation) ReadSpeculativeMitigations()
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management", writable: false);
+            var setting = key?.GetValue("FeatureSettingsOverride") as int?;
+            var mask = key?.GetValue("FeatureSettingsOverrideMask") as int?;
+
+            if (setting is null && mask is null)
+            {
+                return (false, "No mitigation override is set; the processor mitigations are active.");
+            }
+
+            // The commonly published override sets both to 3, which disables the branch-target and
+            // kernel-page mitigations together.
+            var disabled = setting == 3 && mask == 3;
+            return (disabled,
+                disabled
+                    ? "Speculative-execution mitigations are overridden off."
+                    : $"A partial override is present (setting {setting?.ToString() ?? "unset"}, "
+                      + $"mask {mask?.ToString() ?? "unset"}).");
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+        {
+            return (null, $"Mitigation state could not be read: {exception.Message}");
+        }
+    }
+
     /// <summary>
     /// Fast startup hibernates the kernel session instead of shutting it down, so a "shut down"
     /// followed by a power-on resumes the previous kernel state and its driver state with it. That

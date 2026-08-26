@@ -67,11 +67,27 @@ public static class ExpertTweakPolicy
                 + "the game receives them.");
         }
 
-        if (HasPrefix(id, "GAMEDVR-", "DX-SWAPCHAIN-", "DX-GPUPREF-", "GAMEMODE-"))
+        if (HasPrefix(id, "BACKGROUND-DO-", "TELEMETRY-TRACE-", "GAMEDVR-POLICY-"))
+        {
+            return (TweakDisposition.RecommendDefault,
+                "Applied by default: background activity that runs on its own schedule rather than yours, with "
+                + "an exact restore and no effect on the game itself.");
+        }
+
+        if (HasPrefix(id, "GAMEDVR-", "DX-SWAPCHAIN-", "DX-GPUPREF-", "GAMEMODE-",
+                "BACKGROUND-APPS-", "VISUAL-DWM-"))
         {
             return (TweakDisposition.RecommendDefault,
                 "Applied by default: a per-user value that Windows exposes in its own settings interface, "
                 + "captured exactly and restorable in place.");
+        }
+
+        if (HasPrefix(id, "NET-THROTTLE-"))
+        {
+            return (TweakDisposition.RecommendDefault,
+                "Applied by default: a documented mechanism with a defined default and published semantics. "
+                + "The cap applies to exactly the traffic an online game depends on, so what removing it does "
+                + "is not in question — only how much it is worth on a given connection.");
         }
 
         // --- Written inside an experiment ---------------------------------------------------
@@ -85,11 +101,26 @@ public static class ExpertTweakPolicy
                 + "can cost boost headroom rather than gain it.");
         }
 
-        if (HasPrefix(id, "DX-FSO-"))
+        if (HasPrefix(id, "DX-FSO-", "DX-FSE-"))
         {
             return (TweakDisposition.OptInExperiment,
                 "Experiment: which presentation path is faster is genuinely engine- and driver-dependent. Apply "
                 + "it, then confirm the present mode in a capture rather than assuming.");
+        }
+
+        if (HasPrefix(id, "CPU-POWERTHROTTLE-"))
+        {
+            return (TweakDisposition.OptInExperiment,
+                "Experiment: this reaches the same outcome as clearing the throttle on the game process without "
+                + "opening a handle to the game, which is why it is offered where the per-process route is not. "
+                + "Whether Windows was throttling anything that mattered is a measurement.");
+        }
+
+        if (HasPrefix(id, "MEMORY-KERNEL-"))
+        {
+            return (TweakDisposition.OptInExperiment,
+                "Experiment: holding kernel code resident removes a fault that can land mid-frame, but only on "
+                + "a machine with memory to spare. Requires a restart.");
         }
 
         if (HasPrefix(id, "BOOT-FASTSTART-"))
@@ -116,7 +147,7 @@ public static class ExpertTweakPolicy
                 + "when the system is actually contended. Measure it under the contention you actually play in.");
         }
 
-        if (HasPrefix(id, "NET-MODERATION-", "NET-EEE-"))
+        if (HasPrefix(id, "NET-MODERATION-", "NET-EEE-", "NET-RSC-"))
         {
             return (TweakDisposition.OptInExperiment,
                 "Experiment: these are the adapter's own documented properties, the same ones its driver exposes "
@@ -139,6 +170,21 @@ public static class ExpertTweakPolicy
                 "Guided action: memory integrity measurably costs frame rate in CPU-bound scenes, and turning it "
                 + "off measurably reduces kernel driver verification. That trade belongs to the account holder "
                 + "in the Windows Security interface, not to a tweak this application writes on their behalf.");
+        }
+
+        if (HasPrefix(id, "SECURITY-SPECULATIVE-"))
+        {
+            return (TweakDisposition.DiagnosticOnly,
+                "Reported only: overriding the processor's speculative-execution mitigations re-exposes the "
+                + "vulnerability class they exist to close. The reading is shown because the trade is real in "
+                + "both directions; the change is not one this application makes.");
+        }
+
+        if (HasPrefix(id, "NET-MSI-"))
+        {
+            return (TweakDisposition.DiagnosticOnly,
+                "Reported only: an incorrect adapter interrupt configuration can leave the adapter unable to "
+                + "start, which is worse than the delay it was meant to remove.");
         }
 
         // --- Never written --------------------------------------------------------------------

@@ -47,6 +47,12 @@ What it measures that the base scan cannot:
 - **NVIDIA driver-profile context**, read-only through the vendor interface and loaded from the protected Windows system directory. Values are observations rather than a universal competitive preset; Reflex, VRR, driver version, and bottleneck conditions must be benchmarked.
 - **Fast startup**, which hibernates the kernel session instead of ending it, and **interrupt affinity policy** on the display adapter, reported but never written.
 
+- **Multimedia network throttling.** While any process is registered with the multimedia scheduler, the network stack caps non-multimedia packet processing at a documented default of ten per millisecond — which is exactly the traffic an online game depends on. This sits on the same registry key as the CPU reservation and is the more clearly specified of the two.
+- **System-wide power throttling**, which reaches the same outcome as clearing the throttle on the game process without opening a handle to the game to do it.
+- **Receive segment coalescing**, peer-to-peer update sharing, background packaged-application activity, kernel paging, the machine-wide recording policy, desktop transparency, and the always-on diagnostics trace session.
+- **Boot timing options read directly** (`useplatformclock`, `useplatformtick`, `disabledynamictick`, `tscsyncpolicy`) rather than inferred from the performance-counter frequency. Needs elevation, and reports "not read" rather than "nothing set" when it cannot look — those mean opposite things.
+- **Speculative-execution mitigation state**, reported alongside memory integrity. Both are surfaced with the trade stated in both directions and neither is written.
+
 ### Checked and excluded
 
 The catalogue also ships entries for changes that are widely recommended and do not survive scrutiny — USB selective suspend for an actively-used mouse, disabling the page file, SysMain and memory compression, turning off simultaneous multithreading, debloat scripts, legacy launch options, and network stack registry packs. Each states why it was rejected.

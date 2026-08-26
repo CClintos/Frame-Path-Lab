@@ -80,6 +80,9 @@ public sealed class ExpertScanCoordinator
         var fastStartup = PlatformStateScanner.ReadFastStartup();
         var (hasAffinityPolicy, affinityObservation) = PlatformStateScanner.ReadInterruptAffinityPolicy();
         var (defenderReadable, defenderPaths, defenderObservation) = PlatformStateScanner.ReadDefenderExclusions();
+        var bootTiming = PlatformStateScanner.ReadBootTiming();
+        var (nicMsi, nicMsiObservation) = PlatformStateScanner.ReadNetworkInterruptMode();
+        var (mitigationsOverridden, mitigationObservation) = PlatformStateScanner.ReadSpeculativeMitigations();
 
         var networkPath = measureNetwork
             ? NetworkPathProbe.Measure(cancellationToken: cancellationToken)
@@ -113,7 +116,12 @@ public sealed class ExpertScanCoordinator
             defenderReadable,
             defenderPaths,
             defenderObservation,
-            environment.ObservedOptionalApplications.Count > 0);
+            environment.ObservedOptionalApplications.Count > 0,
+            bootTiming,
+            nicMsi,
+            nicMsiObservation,
+            mitigationsOverridden,
+            mitigationObservation);
     }
 
     /// <summary>

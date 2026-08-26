@@ -3,20 +3,6 @@ using FramePathLab.Core.Models;
 namespace FramePathLab.Core.Evidence;
 
 /// <summary>
-/// The complete set of locations this application is permitted to write, checked immediately
-/// before every write and every restore.
-///
-/// The reason this exists rather than trusting the ledger: the ledger describes writes as data, in
-/// a file the signed-in user can edit, and a restore replays that data. Without an independent
-/// check, anything able to edit that file could choose what an elevated restore writes and where —
-/// the ledger would become a command channel rather than a record. Its integrity hash cannot close
-/// that, because whoever can rewrite the file can recompute the hash.
-///
-/// So the ledger is treated as untrusted input. It may only ever name a location on this list, and
-/// the list is compiled in. Blocking privileged writes outright would close the same hole by making
-/// the product unable to do its job; this closes it while leaving the job possible.
-/// </summary>
-/// <summary>
 /// The check applied before every write and restore. Production always uses the compiled-in
 /// allowlist; this exists so a test can exercise the engine against a scratch location without
 /// that location ever being reachable in a shipped build.
@@ -38,20 +24,65 @@ public sealed class AllowlistMutationGuard : IMutationGuard
     public string? FindViolation(MutationRecord record) => MutationAllowlist.FindViolation(record);
 }
 
+/// <summary>
+/// The complete set of locations this application is permitted to write, checked immediately
+/// before every write and every restore.
+///
+/// The reason this exists rather than trusting the ledger: the ledger describes writes as data, in
+/// a file the signed-in user can edit, and a restore replays that data. Without an independent
+/// check, anything able to edit that file could choose what an elevated restore writes and where —
+/// the ledger would become a command channel rather than a record. Its integrity hash cannot close
+/// that, because whoever can rewrite the file can recompute the hash.
+///
+/// The list is keyed by registry key <em>and</em> value name, never by key alone. Several keys the
+/// catalogue legitimately writes also hold values it must never touch: the memory-management key
+/// carries the speculative-execution mitigation override, and the graphics-driver key carries the
+/// timeout-detection settings. Allowing a key wholesale would hand a tampered ledger exactly the
+/// values this product refuses to write.
+/// </summary>
 public static class MutationAllowlist
 {
-    /// <summary>Registry keys that may be written, matched case-insensitively as exact keys.</summary>
-    private static readonly string[] PermittedRegistryKeys =
-    [
-        @"HKCU\System\GameConfigStore",
-        @"HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR",
-        @"HKCU\Software\Microsoft\GameBar",
-        @"HKCU\Software\Microsoft\DirectX\UserGpuPreferences",
-        @"HKCU\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers",
-        @"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power",
-        @"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel",
-        @"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile"
-    ];
+    /// <summary>Registry key to the exact value names permitted beneath it.</summary>
+    private static readonly Dictionary<string, string[]> PermittedRegistryValues =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            [@"HKCU\System\GameConfigStore"] =
+                ["GameDVR_Enabled", "GameDVR_FSEBehavior"],
+            [@"HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR"] =
+                ["AppCaptureEnabled"],
+            [@"HKCU\Software\Microsoft\GameBar"] =
+                ["AutoGameModeEnabled"],
+            [@"HKCU\Software\Microsoft\DirectX\UserGpuPreferences"] =
+                ["DirectXUserGlobalSettings", "*"],
+            [@"HKCU\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers"] =
+                ["*"],
+            [@"HKCU\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications"] =
+                ["GlobalUserDisabled"],
+            [@"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"] =
+                ["EnableTransparency"],
+            [@"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power"] =
+                ["HiberbootEnabled"],
+            [@"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel"] =
+                ["GlobalTimerResolutionRequests"],
+
+            // This key also holds FeatureSettingsOverride, the speculative-execution mitigation
+            // switch. Only the paging value is reachable.
+            [@"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"] =
+                ["DisablePagingExecutive"],
+
+            // Shares a key with SystemResponsiveness; both are permitted, nothing else is.
+            [@"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile"] =
+                ["SystemResponsiveness", "NetworkThrottlingIndex"],
+
+            [@"HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling"] =
+                ["PowerThrottlingOff"],
+            [@"HKLM\SOFTWARE\Policies\Microsoft\Windows\GameDVR"] =
+                ["AllowGameDVR"],
+            [@"HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization"] =
+                ["DODownloadMode"],
+            [@"HKLM\SYSTEM\CurrentControlSet\Control\WMI\Autologger\DiagTrack-Listener"] =
+                ["Start"]
+        };
 
     /// <summary>
     /// Network adapters live under a per-instance key beneath the network class, so this one is a
@@ -69,7 +100,9 @@ public static class MutationAllowlist
         "AdvancedEEE",
         "EnableSavePowerNow",
         "*EnergyEfficientEthernet",
-        "*FlowControl"
+        "*FlowControl",
+        "*RscIPv4",
+        "*RscIPv6"
     ];
 
     private static readonly string[] PermittedSystemParameters =
@@ -122,9 +155,14 @@ public static class MutationAllowlist
 
     private static string? CheckRegistry(string target, string valueName)
     {
-        if (PermittedRegistryKeys.Contains(target, StringComparer.OrdinalIgnoreCase))
+        if (PermittedRegistryValues.TryGetValue(target, out var values))
         {
-            return null;
+            // A "*" entry means the key is keyed by executable name, so the value name cannot be
+            // enumerated in advance. Those keys hold nothing but per-application preferences.
+            return values.Contains("*", StringComparer.Ordinal)
+                   || values.Contains(valueName, StringComparer.OrdinalIgnoreCase)
+                ? null
+                : $"'{valueName}' is not a permitted value under '{target}'.";
         }
 
         if (target.StartsWith(NetworkClassPrefix, StringComparison.OrdinalIgnoreCase))

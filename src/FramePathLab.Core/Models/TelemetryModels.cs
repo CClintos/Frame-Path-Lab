@@ -272,6 +272,30 @@ public sealed record PanelIdentity(
     int MaximumVerticalHz,
     string Observation);
 
+/// <summary>
+/// Boot options that affect timing. Reading these needs elevation, so <see cref="Readable"/>
+/// distinguishes "nothing is set" from "we could not look" — claims that are easy to conflate and
+/// mean opposite things.
+/// </summary>
+public sealed record BootTimingState(
+    bool Readable,
+    bool? UsePlatformClock,
+    bool? UsePlatformTick,
+    bool? DisableDynamicTick,
+    string? TscSyncPolicy,
+    string Observation)
+{
+    public static BootTimingState Unreadable(string reason)
+        => new(false, null, null, null, null, reason);
+
+    /// <summary>
+    /// Either forced option routes the performance counter onto the platform timer, which costs
+    /// far more per read than the processor's own timestamp counter.
+    /// </summary>
+    public bool HasForcedPlatformTimer
+        => UsePlatformClock == true || UsePlatformTick == true;
+}
+
 public sealed record NvidiaProfileSetting(string Name, string Value, string Recommended, bool IsOptimal);
 
 public sealed record NvidiaProfileState(
@@ -289,4 +313,5 @@ public sealed record NetworkAdapterState(
     int? InterruptModeration,
     int? EnergyEfficientEthernet,
     int? FlowControl,
+    int? ReceiveCoalescing,
     string Observation);

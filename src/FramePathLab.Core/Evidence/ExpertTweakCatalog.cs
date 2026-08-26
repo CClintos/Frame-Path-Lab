@@ -124,7 +124,19 @@ public static class ExpertTweakCatalog
             FastStartup(context, reader),
             InterruptAffinityPolicy(context),
             DefenderExclusion(context),
-            FrameLimiterStrategy(context)
+            FrameLimiterStrategy(context),
+            NetworkThrottling(reader),
+            PowerThrottling(reader),
+            DeliveryOptimization(reader),
+            BackgroundApplications(reader),
+            PagedKernel(reader),
+            GameDvrPolicy(reader),
+            SystemWideFullscreenBehaviour(reader),
+            DesktopTransparency(reader),
+            TelemetryAutologger(reader),
+            NetworkInterruptMode(context),
+            BootTiming(context),
+            SpeculativeMitigations(context)
         };
 
         cards.AddRange(NvidiaProfileCards(context));
@@ -2183,6 +2195,460 @@ public static class ExpertTweakCatalog
             null);
     }
 
+    // ---- Background contention and platform policy -------------------------------------------
+
+    /// <summary>
+    /// Builds a card for a single registry value whose correct state is a fixed number.
+    /// </summary>
+    private static ExpertTweakCard RegistryToggle(
+        string id,
+        string category,
+        string title,
+        string mechanism,
+        string rationale,
+        string tradeoff,
+        TweakRisk risk,
+        TweakScope scope,
+        EvidenceQuality evidence,
+        bool requiresElevation,
+        bool requiresReboot,
+        bool requiresGameRestart,
+        string key,
+        string valueName,
+        string desiredValue,
+        string valueType,
+        string description,
+        Func<string?, bool, bool> isOptimal,
+        Func<string?, bool, string> describeCurrent,
+        string recommendedLabel,
+        string optimalDetail,
+        string suboptimalDetail,
+        ITweakStateReader reader,
+        IReadOnlyList<EvidenceSource>? sources = null)
+    {
+        var definition = new ExpertTweakDefinition(
+            id, category, title, mechanism, rationale, tradeoff,
+            risk, scope, evidence, requiresElevation, requiresReboot, requiresGameRestart,
+            sources ?? []);
+
+        var plan = new MutationPlan(
+            $"{id}.value", MutationKind.RegistryValue, key, valueName, desiredValue, valueType, description);
+
+        var current = reader.Read(plan, out var exists);
+        var optimal = isOptimal(current, exists);
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                optimal ? TweakState.Optimal : TweakState.Suboptimal,
+                describeCurrent(current, exists),
+                recommendedLabel,
+                optimal ? optimalDetail : suboptimalDetail),
+            optimal ? [] : [plan],
+            null);
+    }
+
+    private static ExpertTweakCard NetworkThrottling(ITweakStateReader reader)
+        => RegistryToggle(
+            "NET-THROTTLE-001",
+            "Network",
+            "Multimedia network throttling",
+            "While any process is registered with the multimedia scheduler, the network stack caps how many "
+            + "packets per millisecond it will process for everything that is not that multimedia stream. The "
+            + "documented default is ten.",
+            "A game is exactly the kind of traffic this cap applies to, and ten packets per millisecond is a "
+            + "ceiling a busy session can reach. Unlike the reservation value on the same key, this one has "
+            + "published semantics and a defined default, so what removing it does is not in question.",
+            "Removes a protection intended to keep media playback smooth under heavy network load. On a machine "
+            + "that also does bulk transfers while playing, that protection was doing something.",
+            TweakRisk.Moderate,
+            TweakScope.Machine,
+            EvidenceQuality.Strong,
+            true, true, false,
+            MmcssProfilePath,
+            "NetworkThrottlingIndex",
+            "4294967295",
+            "DWord",
+            "Disable multimedia network throttling",
+            (current, exists) => exists && current is "4294967295" or "-1",
+            (current, exists) => exists ? $"{current} packets per millisecond" : "Not set (default: 10 per millisecond)",
+            "Disabled",
+            "Network throttling is already switched off.",
+            "The stack is capping non-multimedia packet processing while a multimedia policy is active.",
+            reader,
+            [MicrosoftMmcss]);
+
+    private static ExpertTweakCard PowerThrottling(ITweakStateReader reader)
+        => RegistryToggle(
+            "CPU-POWERTHROTTLE-001",
+            "CPU",
+            "System-wide power throttling",
+            "Windows places processes it judges to be non-critical into a reduced performance state, biasing "
+            + "them onto efficiency cores and lower clocks.",
+            "This reaches the same outcome as clearing the throttle on the game process, without opening a "
+            + "handle to the game to do it. That distinction matters: the per-process route requires rights over "
+            + "a protected process, and this one does not touch the game at all.",
+            "Disables an energy-saving behaviour for every process, not just the game. On a laptop that is a "
+            + "real battery cost; on a desktop it is mostly idle power.",
+            TweakRisk.Moderate,
+            TweakScope.Machine,
+            EvidenceQuality.Moderate,
+            true, true, false,
+            @"HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling",
+            "PowerThrottlingOff",
+            "1",
+            "DWord",
+            "Disable system-wide power throttling",
+            (current, exists) => exists && current == "1",
+            (current, exists) => exists && current == "1" ? "Disabled" : "Enabled (Windows default)",
+            "Disabled",
+            "No system-wide power throttling is applied.",
+            "Windows may place the game into a reduced performance state.",
+            reader,
+            [MicrosoftEcoQoS]);
+
+    private static ExpertTweakCard DeliveryOptimization(ITweakStateReader reader)
+        => RegistryToggle(
+            "BACKGROUND-DO-001",
+            "Background",
+            "Update delivery peer-to-peer sharing",
+            "Delivery optimisation uploads update content to other machines on the network and the internet, "
+            + "using the connection while it does.",
+            "This is upload contention that arrives without warning and has nothing to do with the game. It is "
+            + "one of the few background causes that can add jitter to a session on an otherwise idle machine.",
+            "Updates download from Microsoft directly rather than from peers, which can be slower on a "
+            + "connection where several machines update together.",
+            TweakRisk.Low,
+            TweakScope.Machine,
+            EvidenceQuality.Moderate,
+            true, false, false,
+            @"HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization",
+            "DODownloadMode",
+            "0",
+            "DWord",
+            "Disable peer-to-peer update sharing",
+            (current, exists) => exists && current == "0",
+            (current, exists) => exists ? $"Mode {current}" : "Not set (peers on the network and internet)",
+            "Disabled (0)",
+            "Update content is not shared with peers.",
+            "Update content may be uploaded to other machines while you play.",
+            reader);
+
+    private static ExpertTweakCard BackgroundApplications(ITweakStateReader reader)
+        => RegistryToggle(
+            "BACKGROUND-APPS-001",
+            "Background",
+            "Background application activity",
+            "Packaged applications may keep running after they lose focus, holding processor time, memory and "
+            + "network.",
+            "None of it is doing anything for the player during a match, and the wake-ups arrive on their own "
+            + "schedule rather than yours.",
+            "Background notifications, live tiles and sync for those applications stop until they are opened.",
+            TweakRisk.Low,
+            TweakScope.CurrentUser,
+            EvidenceQuality.Moderate,
+            false, false, false,
+            @"HKCU\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications",
+            "GlobalUserDisabled",
+            "1",
+            "DWord",
+            "Disabled",
+            (current, exists) => exists && current == "1",
+            (current, exists) => exists && current == "1" ? "Disabled" : "Allowed (Windows default)",
+            "Disabled",
+            "Packaged applications do not run in the background.",
+            "Packaged applications may run and wake while the game is in focus.",
+            reader);
+
+    private static ExpertTweakCard PagedKernel(ITweakStateReader reader)
+        => RegistryToggle(
+            "MEMORY-KERNEL-001",
+            "Memory",
+            "Kernel and driver paging",
+            "By default the kernel and driver code may be paged out of physical memory when it has not been "
+            + "used recently.",
+            "Paging kernel code out means a page fault at the moment something needs it again, and that fault "
+            + "lands inside the frame that needed it. On a machine with memory to spare there is nothing to "
+            + "gain by evicting it in the first place.",
+            "Holds kernel and driver code resident permanently. On a machine short of memory this makes matters "
+            + "worse rather than better.",
+            TweakRisk.Low,
+            TweakScope.Machine,
+            EvidenceQuality.Moderate,
+            true, true, false,
+            @"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management",
+            "DisablePagingExecutive",
+            "1",
+            "DWord",
+            "Kernel held resident",
+            (current, exists) => exists && current == "1",
+            (current, exists) => exists && current == "1" ? "Held resident" : "May be paged out (Windows default)",
+            "Held resident",
+            "Kernel and driver code stays in physical memory.",
+            "Kernel and driver code may be paged out and faulted back in mid-frame.",
+            reader);
+
+    private static ExpertTweakCard GameDvrPolicy(ITweakStateReader reader)
+        => RegistryToggle(
+            "GAMEDVR-POLICY-001",
+            "Background",
+            "Machine-wide game recording policy",
+            "A machine-level policy switches the capture service off for every account, rather than for the "
+            + "signed-in user only.",
+            "The per-user switch leaves the service able to run; the policy stops it being enabled at all. "
+            + "Setting both is what actually removes the capture path rather than hiding its toggle.",
+            "Retroactive clip capture stops working for every account on the machine.",
+            TweakRisk.Low,
+            TweakScope.Machine,
+            EvidenceQuality.Moderate,
+            true, false, true,
+            @"HKLM\SOFTWARE\Policies\Microsoft\Windows\GameDVR",
+            "AllowGameDVR",
+            "0",
+            "DWord",
+            "Disabled",
+            (current, exists) => exists && current == "0",
+            (current, exists) => exists && current == "0" ? "Disabled by policy" : "Not set (allowed)",
+            "Disabled by policy",
+            "The capture service is disabled machine-wide.",
+            "The capture service is permitted machine-wide even if the per-user switch is off.",
+            reader);
+
+    private static ExpertTweakCard SystemWideFullscreenBehaviour(ITweakStateReader reader)
+        => RegistryToggle(
+            "DX-FSE-001",
+            "Presentation",
+            "System-wide fullscreen behaviour",
+            "This value selects the default presentation path for fullscreen titles across the whole account, "
+            + "where the compatibility flag does it for one executable.",
+            "Setting it once is what makes the behaviour consistent for every title, rather than remembering to "
+            + "flag each executable. Which path is faster remains engine-dependent, so this decides what gets "
+            + "measured rather than deciding the answer.",
+            "Applies to every fullscreen application for this account. Confirm the result in a capture; the "
+            + "present mode is the evidence, not the setting.",
+            TweakRisk.Moderate,
+            TweakScope.CurrentUser,
+            EvidenceQuality.Weak,
+            false, false, true,
+            @"HKCU\System\GameConfigStore",
+            "GameDVR_FSEBehavior",
+            "2",
+            "DWord",
+            "Optimisations off system-wide",
+            (current, exists) => exists && current == "2",
+            (current, exists) => exists ? $"Mode {current}" : "Not set (Windows default)",
+            "2 (optimisations off), then measured",
+            "Fullscreen optimisations are switched off for this account.",
+            "Fullscreen titles use the Windows default presentation path.",
+            reader);
+
+    private static ExpertTweakCard DesktopTransparency(ITweakStateReader reader)
+        => RegistryToggle(
+            "VISUAL-DWM-001",
+            "Presentation",
+            "Desktop transparency effects",
+            "Transparency makes the desktop compositor blur and blend behind window surfaces every time it "
+            + "composes.",
+            "Small, free, and entirely outside the game. It matters most in borderless presentation, where the "
+            + "compositor is in the frame path rather than beside it.",
+            "The desktop loses its translucency. No effect on anything else.",
+            TweakRisk.Low,
+            TweakScope.CurrentUser,
+            EvidenceQuality.Weak,
+            false, false, false,
+            @"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            "EnableTransparency",
+            "0",
+            "DWord",
+            "Off",
+            (current, exists) => exists && current == "0",
+            (current, exists) => exists && current == "0" ? "Off" : "On (Windows default)",
+            "Off",
+            "Transparency is already off.",
+            "The compositor is blending transparency on every composition pass.",
+            reader);
+
+    private static ExpertTweakCard TelemetryAutologger(ITweakStateReader reader)
+        => RegistryToggle(
+            "TELEMETRY-TRACE-001",
+            "Background",
+            "Diagnostics trace session",
+            "An always-on kernel trace session writes diagnostic events to disk continuously, independently of "
+            + "whether the telemetry service itself is running.",
+            "It is background disk activity that runs whether or not anything ever reads the result. Stopping "
+            + "the trace session is what actually ends the writes; disabling the service alone does not.",
+            "Diagnostic traces are no longer collected, which removes information Microsoft support would use "
+            + "to investigate a fault.",
+            TweakRisk.Low,
+            TweakScope.Machine,
+            EvidenceQuality.Moderate,
+            true, true, false,
+            @"HKLM\SYSTEM\CurrentControlSet\Control\WMI\Autologger\DiagTrack-Listener",
+            "Start",
+            "0",
+            "DWord",
+            "Stopped",
+            (current, exists) => exists && current == "0",
+            (current, exists) => exists && current == "0" ? "Stopped" : "Running",
+            "Stopped",
+            "The trace session is not started at boot.",
+            "A kernel trace session is writing diagnostic events to disk continuously.",
+            reader);
+
+    private static ExpertTweakCard NetworkInterruptMode(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "NET-MSI-001",
+            "Network",
+            "Network adapter interrupt mode",
+            "Message-signalled interrupts let the adapter raise an interrupt by writing to memory rather than "
+            + "asserting a shared line, removing shared-line arbitration from the receive path.",
+            "The receive path is where a server tick becomes a packet the game can read, so interrupt handling "
+            + "delay here lands directly on tick arrival. Modern adapters default to message-signalled "
+            + "interrupts, so this usually confirms rather than corrects.",
+            "Reported only. An incorrect interrupt configuration can leave an adapter unable to start, which is "
+            + "considerably worse than the delay it was meant to remove.",
+            TweakRisk.High,
+            TweakScope.Machine,
+            EvidenceQuality.Weak,
+            true, true, false,
+            []);
+
+        var state = context.NetworkMessageSignalledInterrupts;
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                state switch
+                {
+                    true => TweakState.Optimal,
+                    false => TweakState.Suboptimal,
+                    null => TweakState.Unknown
+                },
+                state switch
+                {
+                    true => "Message-signalled interrupts enabled",
+                    false => "Line-based interrupts explicitly selected",
+                    null => "No explicit value; the driver default applies"
+                },
+                "Message-signalled interrupts",
+                context.NetworkInterruptObservation),
+            [],
+            "Adapter interrupt configuration is never written by this application.");
+    }
+
+    private static ExpertTweakCard BootTiming(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "BOOT-TIMING-001",
+            "Timing",
+            "Boot timing options",
+            "Boot configuration can force the performance counter onto the platform timer instead of the "
+            + "processor's own timestamp counter, and can pin the kernel to a fixed tick.",
+            "Reading the platform timer costs far more than reading the timestamp counter, and an engine queries "
+            + "it thousands of times a second. Forcing it is a change tweak guides recommend and almost never "
+            + "reverse, so it is worth checking directly rather than inferring.",
+            "Reported only. Boot configuration is never written by this application; the exact command to clear "
+            + "a forced value is given instead.",
+            TweakRisk.Low,
+            TweakScope.Machine,
+            EvidenceQuality.Strong,
+            true, true, false,
+            [MicrosoftTimers]);
+
+        var boot = context.BootTiming;
+        if (!boot.Readable)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(TweakState.Unknown, "Not read", "No forced platform timer", boot.Observation),
+                [],
+                null);
+        }
+
+        var forced = boot.HasForcedPlatformTimer;
+        var detail = forced
+            ? "A forced platform timer is set. Clear it from an elevated prompt with "
+              + "\"bcdedit /deletevalue useplatformclock\" (and useplatformtick if present), then restart."
+            : "No forced platform timer is set, which is the correct state on a modern platform.";
+
+        var extras = new List<string>();
+        if (boot.DisableDynamicTick == true)
+        {
+            extras.Add("Dynamic tick is disabled, which raises idle timer interrupts; this is a change worth "
+                       + "measuring rather than assuming.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(boot.TscSyncPolicy))
+        {
+            extras.Add($"Timestamp counter sync policy is set to {boot.TscSyncPolicy}.");
+        }
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                forced ? TweakState.Suboptimal : TweakState.Optimal,
+                $"platform clock {Describe(boot.UsePlatformClock)}, platform tick {Describe(boot.UsePlatformTick)}"
+                + $", dynamic tick {(boot.DisableDynamicTick == true ? "disabled" : "default")}",
+                "No forced platform timer",
+                string.Join(" ", new[] { detail }.Concat(extras))),
+            [],
+            forced ? "Boot configuration is never written by this application." : null);
+    }
+
+    private static string Describe(bool? value)
+        => value switch { true => "forced on", false => "explicitly off", null => "not set" };
+
+    private static ExpertTweakCard SpeculativeMitigations(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "SECURITY-SPECULATIVE-001",
+            "Security trade-off",
+            "Speculative-execution mitigations",
+            "The processor mitigations for speculative-execution vulnerabilities add work to kernel entry and "
+            + "exit, and to branch prediction behaviour around it.",
+            "The cost concentrates in the same place memory integrity does: syscall-heavy, CPU-bound work at "
+            + "high frame rates. It is one of the larger numbers available on this class of processor, and it "
+            + "is also one of the larger security guarantees on the machine.",
+            "Turning these off re-exposes the processor to the vulnerability class they exist to mitigate. "
+            + "FramePath Lab reports the state and does not change it.",
+            TweakRisk.SecurityTradeOff,
+            TweakScope.Machine,
+            EvidenceQuality.Moderate,
+            true, true, false,
+            []);
+
+        var overridden = context.SpeculativeMitigationsOverridden;
+
+        // The state label must not read as approval. A machine running without these mitigations is
+        // notable and is deliberately not something this application changes, so it reports as
+        // blocked rather than as optimal — "optimal" would tell a reader that security being off is
+        // the state we wanted.
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                overridden switch
+                {
+                    true => TweakState.Blocked,
+                    false => TweakState.Optimal,
+                    null => TweakState.Unknown
+                },
+                overridden switch
+                {
+                    true => "Mitigations overridden off",
+                    false => "Mitigations active",
+                    null => "Not readable"
+                },
+                "Your decision, not a recommendation",
+                context.SpeculativeMitigationObservation
+                + (overridden == true
+                    ? " This machine is running without those mitigations. That is a defensible choice on a "
+                      + "dedicated gaming machine and a poor one on a machine that does anything else."
+                    : " FramePath Lab surfaces this because the trade is real in both directions, and does not "
+                      + "make it for you.")),
+            [],
+            "Processor mitigation state is never written by this application.");
+    }
+
     // ---- Excluded, with the reason stated ----------------------------------------------------
 
     /// <summary>
@@ -2238,10 +2704,47 @@ public static class ExpertTweakCatalog
 
         yield return Debunk(
             "EXCLUDE-NETTWEAK-001",
-            "Network stack registry packs",
-            "Competitive shooters send small, frequent datagrams. Settings aimed at bulk transfer throughput, "
-            + "including the classic small-packet batching option, do not apply to that traffic pattern. Measured "
-            + "jitter on the local hop is the useful number; these values are not.");
+            "Nagle and TCP acknowledgement tuning",
+            "These change how the transmission-control protocol batches small packets and acknowledgements. "
+            + "Competitive shooters do not use that protocol — they send datagrams, which are never batched by "
+            + "Nagle and never acknowledged by the stack. The settings are real and they do what they claim; "
+            + "they simply do not touch game traffic. Measured jitter on the local hop is the useful number.");
+
+        yield return Debunk(
+            "EXCLUDE-TDR-001",
+            "Disabling graphics timeout detection",
+            "Timeout detection is what lets Windows reset a hung graphics driver and carry on. Disabling it does "
+            + "not make a hang less likely; it converts a recoverable two-second stall into a machine that has "
+            + "to be power-cycled. This one is commonly listed as a low-risk latency tweak and is neither.");
+
+        yield return Debunk(
+            "EXCLUDE-FLIPQUEUE-001",
+            "Flip queue size registry value",
+            "Widely published as cutting queued frames on NVIDIA hardware. The queue depth is a driver profile "
+            + "setting, not a graphics-driver registry value, and this application reads the real one directly "
+            + "from the driver. Writing the registry name changes nothing.");
+
+        yield return Debunk(
+            "EXCLUDE-PREEMPTION-001",
+            "GPU preemption granularity keys",
+            "A block of eight or more values usually written under the graphics-driver key. None has published "
+            + "semantics, and the community sources that name them place several under different keys entirely, "
+            + "so as commonly written they are probably landing nowhere. Unverifiable in both directions, which "
+            + "is reason enough not to ship them as a one-click fix.");
+
+        yield return Debunk(
+            "EXCLUDE-INPUTQUEUE-001",
+            "Mouse and keyboard data queue size",
+            "Reducing the class driver's queue is described as cutting input buffering. The queue is headroom "
+            + "for reports that have arrived but not yet been read, not a delay applied to them: reports are not "
+            + "held until it fills. Shrinking it cannot make delivery earlier, and under load it can drop "
+            + "reports that would otherwise have been kept.");
+
+        yield return Debunk(
+            "EXCLUDE-IRQ8-001",
+            "Real-time clock interrupt priority",
+            "An undocumented value with no published effect on any current Windows version, carried forward from "
+            + "guides written for operating systems that scheduled interrupts differently.");
     }
 
     private static ExpertTweakCard Debunk(string id, string title, string reason)
@@ -2332,6 +2835,46 @@ public static class ExpertTweakCatalog
                         "Disabled",
                         adapter.Observation),
                     moderation == 0 ? [] : [plan],
+                    null);
+            }
+
+            if (adapter.ReceiveCoalescing is { } coalescing)
+            {
+                var plan = new MutationPlan(
+                    $"NET-RSC-{adapter.Name}.value",
+                    MutationKind.RegistryValue,
+                    adapter.RegistryKeyPath,
+                    "*RscIPv4",
+                    "0",
+                    "String",
+                    $"Disable receive segment coalescing on {adapter.Name}");
+
+                yield return new ExpertTweakCard(
+                    new ExpertTweakDefinition(
+                        $"NET-RSC-{adapter.Name}",
+                        "Network",
+                        $"Receive segment coalescing ({adapter.Name})",
+                        "Receive coalescing merges several arriving segments into one larger unit before handing "
+                        + "them up the stack, so the processor is interrupted once instead of repeatedly.",
+                        "Merging requires waiting to see whether another segment arrives to merge with. That wait "
+                        + "is spent on every batch, and it is spent on the packets carrying server ticks. The "
+                        + "processor saving it buys is worth far less than the delay on a connection that is "
+                        + "nowhere near saturating a modern adapter.",
+                        "Raises interrupt and processor load slightly, and reduces throughput efficiency on bulk "
+                        + "transfers. Applying resets the adapter, which briefly drops the link.",
+                        TweakRisk.Moderate,
+                        TweakScope.Machine,
+                        EvidenceQuality.Moderate,
+                        true,
+                        false,
+                        false,
+                        []),
+                    new TweakReading(
+                        coalescing == 0 ? TweakState.Optimal : TweakState.Suboptimal,
+                        coalescing == 0 ? "Disabled" : "Enabled",
+                        "Disabled",
+                        adapter.Observation),
+                    coalescing == 0 ? [] : [plan],
                     null);
             }
 
