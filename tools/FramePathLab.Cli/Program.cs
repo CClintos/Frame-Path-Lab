@@ -46,6 +46,7 @@ internal static class Program
                 "expert-history" => ExpertHistory(),
                 "benchmark" => Benchmark(args),
                 "autotune" => await AutoTuneAsync(args),
+                "abtest" => await AbTestAsync(args),
                 _ => UnknownCommand(args[0])
             };
         }
@@ -319,6 +320,41 @@ internal static class Program
         return report.Applied > 0 || report.CandidatesConsidered == 0 ? 0 : 1;
     }
 
+    private static async Task<int> AbTestAsync(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("Usage: abtest <tweak-id> [--pairs N]");
+            return 2;
+        }
+
+        var pairs = 5;
+        var pairsIndex = Array.FindIndex(args, a => a.Equals("--pairs", StringComparison.OrdinalIgnoreCase));
+        if (pairsIndex >= 0 && pairsIndex + 1 < args.Length
+            && int.TryParse(args[pairsIndex + 1], out var parsedPairs))
+        {
+            pairs = Math.Clamp(parsedPairs, 2, 12);
+        }
+
+        var engine = BuildEngine();
+        var context = await BuildContextAsync(measureInput: false);
+        var card = engine.Evaluate(context)
+            .FirstOrDefault(entry => string.Equals(entry.Definition.Id, args[1], StringComparison.OrdinalIgnoreCase));
+        if (card is null)
+        {
+            Console.Error.WriteLine($"No expert tweak with id '{args[1]}'.");
+            return 2;
+        }
+
+        Console.Error.WriteLine(
+            $"Paired A/B on {card.Definition.Id}, up to {pairs} pairs ({pairs * 2} benchmark runs).");
+        var progress = new Progress<string>(message => Console.Error.WriteLine($"  {message}"));
+        var report = new AbTestRunner(engine, new SyntheticBenchmarkRunner()).Run(card, pairs, progress);
+
+        Console.WriteLine(JsonSerializer.Serialize(report, JsonOptions));
+        return report.Verdict == "Abandoned" ? 1 : 0;
+    }
+
     private static int Benchmark(string[] args)
     {
         var quick = args.Contains("--quick", StringComparer.OrdinalIgnoreCase);
@@ -362,6 +398,7 @@ internal static class Program
         Console.WriteLine("  expert-revert <id|all>         undo a recorded transaction");
         Console.WriteLine("  expert-history                 list every recorded transaction");
         Console.WriteLine("  benchmark [--quick]            run the self-contained frame benchmark");
+        Console.WriteLine("  abtest <tweak-id> [--pairs N]  interleaved paired A/B on one change");
         Console.WriteLine("  autotune [--conservative|--aggressive] [--isolate]");
         Console.WriteLine("                                 measure, apply, re-measure, keep what earned it");
         Console.WriteLine("  expert-verify <id|any> <before.csv> <after.csv> [--revert-on-failure]");

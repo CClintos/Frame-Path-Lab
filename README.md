@@ -109,6 +109,39 @@ Two modes. `--bundle` applies everything and measures once: fast, and answers "w
 
 **Nothing is kept on the catalogue's own opinion.** A change is applied because policy permits writing it, and retained only because the measurement afterwards supports it. A change that could not be measured is reversed and reported as unmeasured — never counted as a pass, because "we applied it and couldn't tell" is precisely the failure this tool exists to avoid.
 
+### Paired A/B — the honest way to test one change
+
+```powershell
+.\work\dotnet\dotnet.exe run --project .	ools\FramePathLab.Cli\FramePathLab.Cli.csproj -- abtest INPUT-ACCEL-001 --pairs 5
+```
+
+Two problems make "measure, change, measure" unreliable, and both showed up in this project's own benchmark.
+
+**Drift.** Six identical runs on an untouched machine, in order:
+
+```
+14.09  14.12  14.18  14.17  14.28  14.30      median frame time, ms
+```
+
+That is not scatter, it is a monotonic +1.5% trend as the machine warms. Measure three "before" then three "after" and you record a **0.85% regression that does not exist**. So measurements are interleaved in a balanced order — off, on, on, off — giving both conditions the same average position in time, which cancels a linear trend instead of attributing it to the change.
+
+**No error bar.** One difference cannot say whether it exceeds what two identical runs would produce anyway. Several pairs give a distribution of differences, and the interval around their mean separates a real effect from luck. The comparison is paired, not pooled: each pair shares its own conditions, so what matters is the difference *within* a pair.
+
+Measured noise floor on this machine, six runs, no change applied:
+
+| metric | run-to-run sd | range |
+|---|---|---|
+| median frame time | 0.58% | 1.45% |
+| P95 frame time | 0.77% | 1.80% |
+| P99 frame time | 1.16% | 3.14% |
+| frame-time consistency | 1.34% | 3.13% |
+
+Anything below roughly 2% is indistinguishable from the machine's own variation, which is where the practical threshold comes from.
+
+**How many pairs, and how long?** Detection margin scales as `1 / sqrt(frames × pairs)`, so total time is what buys precision — but *how* it is split matters, because the small-sample critical value is brutal. Five thirty-second runs beat two two-minute runs decisively despite being shorter overall: at two samples the 95% critical value is 12.7, at five it is 2.78. Below three pairs almost nothing can be concluded.
+
+The default is five pairs against a frame target rather than a duration, with early stopping once the interval settles. That detects a 2% change on P99 and refuses to pretend otherwise when it cannot.
+
 ### The benchmark it runs
 
 The app renders its own, so nothing external is needed and there is no capture to lose.
@@ -121,7 +154,11 @@ The workload is **fixed, not calibrated**. A benchmark that adjusts its work unt
 
 Measured repeatability on an idle machine: P99 spread **0.5%**, median **1.8%** — below the 2% noise band, which is what makes a real difference attributable.
 
-It is a proxy, not the game. It exercises the presentation path, the scheduler, memory latency and power behaviour faithfully, because those are shared. It does not reproduce draw-call submission overhead. Anything that turns on engine specifics still gets confirmed against a real capture.
+The load is **not flat**. A constant workload leaves only system noise in the frame-time tail, so the percentile that decides every verdict measures the wrong thing. A real session is not flat either — an engagement puts more entities in view, smoke puts heavy overdraw on screen — and those transitions are what a player feels when a machine handles them badly. So the run cycles through phases (holding, engagement, smoke, rotate, flash) that scale both processor work and graphics fill, **on a fixed schedule driven by the frame index**. Identical every run. Realistic tails and exact repeatability at once, which is the thing "just play a round" can never give you.
+
+Graphics work is real fill through the driver's command submission path, so changes to hardware scheduling, driver settings and power states have something to move rather than presenting an empty frame.
+
+It is a proxy, not the game. It exercises the presentation path, the scheduler, memory latency, graphics submission and power behaviour faithfully, because those are shared. It does not reproduce a specific engine's shader or draw-call mix. Anything that turns on engine specifics still gets confirmed against a real capture.
 
 ## CPU & platform
 

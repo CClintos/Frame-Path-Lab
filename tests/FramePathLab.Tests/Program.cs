@@ -70,7 +70,11 @@ internal static class Program
         ("Stacked-cache parts report locked boost controls", TestCpuTuningStackedCacheAsync),
         ("Autotune levels widen without ever including excluded work", TestAutoTuneLevelsAsync),
         ("Autotune reverts a regression instead of keeping it", TestAutoTuneRevertsRegressionAsync),
-        ("Autotune never keeps a change it could not measure", TestAutoTuneRefusesUnmeasuredAsync)
+        ("Autotune never keeps a change it could not measure", TestAutoTuneRefusesUnmeasuredAsync),
+        ("Paired schedule balances condition order against drift", TestAbScheduleBalancesDriftAsync),
+        ("Paired test cancels a linear drift confound", TestAbCancelsDriftAsync),
+        ("Paired test refuses to conclude from too few pairs", TestAbSmallSampleAsync),
+        ("Paired test reports a real effect as conclusive", TestAbDetectsRealEffectAsync)
     ];
 
     public static async Task<int> Main()
@@ -1745,6 +1749,77 @@ internal static class Program
         {
             ClearTestRegistry();
         }
+    }
+
+    private static Task TestAbScheduleBalancesDriftAsync()
+    {
+        var schedule = PairedAbTest.BuildSchedule(4);
+        AssertEqual(8, schedule.Count, "four pairs means eight measurements");
+        AssertEqual(4, schedule.Count(applied => applied), "each condition must be measured equally often");
+
+        // The balance that matters is positional: if one condition sits systematically later in
+        // the session, a drifting machine attributes the drift to that condition.
+        var appliedPositions = schedule.Select((applied, index) => (applied, index))
+            .Where(entry => entry.applied).Sum(entry => entry.index);
+        var offPositions = schedule.Select((applied, index) => (applied, index))
+            .Where(entry => !entry.applied).Sum(entry => entry.index);
+        AssertEqual(offPositions, appliedPositions,
+            "both conditions must occupy the same average position in time");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestAbCancelsDriftAsync()
+    {
+        // A machine that gets steadily slower, with the change itself doing nothing at all. Under
+        // a balanced schedule the drift must not be reported as an effect.
+        var schedule = PairedAbTest.BuildSchedule(4);
+        var readings = schedule.Select((_, index) => 10.0 + (index * 0.20)).ToArray();
+
+        var pairs = new List<AbPair>();
+        for (var index = 0; index < schedule.Count; index += 2)
+        {
+            var first = schedule[index];
+            var a = first ? readings[index + 1] : readings[index];
+            var b = first ? readings[index] : readings[index + 1];
+            pairs.Add(new AbPair(index / 2, a, b));
+        }
+
+        var result = PairedAbTest.Evaluate("p99_frame_ms", "P99 frame time", true, pairs);
+        Assert(!result.Conclusive,
+            $"pure drift must not read as an effect, but reported {result.MeanPercentChange:0.##}%");
+        Assert(Math.Abs(result.MeanPercentChange) < PairedAbTest.PracticalThresholdPercent,
+            "a balanced schedule should leave drift near zero");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestAbSmallSampleAsync()
+    {
+        // Two pairs with a large apparent difference. The t critical value at one degree of
+        // freedom is punishing for a reason: two points cannot establish a trend.
+        var pairs = new List<AbPair> { new(0, 10.0, 9.0), new(1, 10.0, 9.2) };
+        var result = PairedAbTest.Evaluate("p99_frame_ms", "P99 frame time", true, pairs);
+        Assert(!result.Conclusive, "two pairs must not produce a conclusive verdict");
+
+        var single = PairedAbTest.Evaluate("p99_frame_ms", "P99 frame time", true,
+            [new AbPair(0, 10.0, 5.0)]);
+        Assert(!single.Conclusive, "a single pair can never be conclusive regardless of the difference");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestAbDetectsRealEffectAsync()
+    {
+        // A consistent eight percent improvement with realistic scatter must be found.
+        var pairs = new List<AbPair>
+        {
+            new(0, 10.00, 9.18), new(1, 10.05, 9.25), new(2, 9.96, 9.14),
+            new(3, 10.02, 9.20), new(4, 9.99, 9.22)
+        };
+
+        var result = PairedAbTest.Evaluate("p99_frame_ms", "P99 frame time", true, pairs);
+        Assert(result.Conclusive, $"a consistent 8% effect must be conclusive: {result.Finding}");
+        Assert(result.IsImprovement, "a lower P99 must read as an improvement");
+        Assert(result.ConfidenceHighPercent < 0, "the whole interval should sit below zero");
+        return Task.CompletedTask;
     }
 
     private sealed class CountingReader(ITweakStateReader inner) : ITweakStateReader

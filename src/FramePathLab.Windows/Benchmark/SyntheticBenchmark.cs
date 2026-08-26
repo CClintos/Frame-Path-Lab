@@ -154,7 +154,7 @@ public sealed class SyntheticBenchmark
                     + "A hardware graphics adapter is required.");
             }
 
-            return Measure(swapChain, options, cancellationToken);
+            return Measure(swapChain, device, context, options, cancellationToken);
         }
         finally
         {
@@ -184,9 +184,41 @@ public sealed class SyntheticBenchmark
 
     private static BenchmarkResult Measure(
         IDxgiSwapChain swapChain,
+        nint devicePointer,
+        nint contextPointer,
         BenchmarkOptions options,
         CancellationToken cancellationToken)
     {
+        // A render target view over the back buffer, so the graphics processor has real fill work
+        // to do rather than the run measuring an empty present.
+        nint renderTarget = 0;
+        ID3D11DeviceContext? context = null;
+        try
+        {
+            var textureIid = new Guid("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
+            if (swapChain.GetBuffer(0, ref textureIid, out var backBuffer) >= 0 && backBuffer != 0)
+            {
+                try
+                {
+                    if (Marshal.GetObjectForIUnknown(devicePointer) is ID3D11Device device)
+                    {
+                        device.CreateRenderTargetView(backBuffer, 0, out renderTarget);
+                    }
+                }
+                finally
+                {
+                    Marshal.Release(backBuffer);
+                }
+            }
+
+            context = Marshal.GetObjectForIUnknown(contextPointer) as ID3D11DeviceContext;
+        }
+        catch (Exception exception) when (exception is InvalidCastException or COMException)
+        {
+            // Graphics work is optional; the processor-side measurement stands without it.
+            renderTarget = 0;
+        }
+
         var syncInterval = options.AllowTearing ? 0u : 1u;
         var presentFlags = options.AllowTearing ? SwapChainInterop.PresentAllowTearing : 0u;
         var workload = options.Workload ?? FrameWorkload.Create();
@@ -220,9 +252,23 @@ public sealed class SyntheticBenchmark
                 break;
             }
 
+            // The phase is a pure function of the frame index, so the load pattern is identical
+            // on every run even though it is not constant within a run.
+            var phase = options.Profile.PhaseAt(frame);
+
             var cpuStart = Stopwatch.GetTimestamp();
-            SimulateFrameWork(workload);
+            SimulateFrameWork(workload, phase.CpuScale);
             var cpuElapsed = Stopwatch.GetElapsedTime(cpuStart).TotalMilliseconds;
+
+            if (renderTarget != 0 && context is not null)
+            {
+                for (var clear = 0; clear < phase.GpuClears; clear++)
+                {
+                    // Colour varies with the frame so the driver cannot collapse repeated clears.
+                    var shade = ((frame + clear) % 64) / 64f;
+                    context.ClearRenderTargetView(renderTarget, [shade, 0.15f, 1f - shade, 1f]);
+                }
+            }
 
             var presented = swapChain.Present(syncInterval, presentFlags);
             if (presented < 0)
@@ -259,6 +305,11 @@ public sealed class SyntheticBenchmark
                 + "for the percentiles to be comparable. Use a longer run.");
         }
 
+        if (renderTarget != 0)
+        {
+            Marshal.Release(renderTarget);
+        }
+
         swapChain.GetLastPresentCount(out var lastPresentCount);
         var statistics = swapChain.GetFrameStatistics(out var stats) >= 0 ? stats : default;
 
@@ -292,22 +343,24 @@ public sealed class SyntheticBenchmark
     /// the work is dispatched across threads so core availability and scheduling policy register
     /// the way an engine's job system would.
     /// </summary>
-    private static long SimulateFrameWork(FrameWorkload workload)
+    private static long SimulateFrameWork(FrameWorkload workload, double scale)
     {
         var set = workload.WorkingSet;
         var mask = set.Length - 1;
+        var mainChase = (int)(workload.MainThreadChase * scale);
+        var workerChase = (int)(workload.WorkerChase * scale);
 
         // The main thread carries the largest share, mirroring an engine whose frame is gated on
         // one dominant thread rather than spread evenly.
         var index = workload.Seed & mask;
         long accumulator = 0;
-        for (var step = 0; step < workload.MainThreadChase; step++)
+        for (var step = 0; step < mainChase; step++)
         {
             index = set[index];
             accumulator += index;
         }
 
-        if (workload.WorkerThreads > 1 && workload.WorkerChase > 0)
+        if (workload.WorkerThreads > 1 && workerChase > 0)
         {
             var partials = new long[workload.WorkerThreads];
             Parallel.For(0, workload.WorkerThreads, worker =>
@@ -316,7 +369,7 @@ public sealed class SyntheticBenchmark
                 // rather than sharing one warmed path.
                 var local = (workload.Seed + (worker * 7919)) & mask;
                 long sum = 0;
-                for (var step = 0; step < workload.WorkerChase; step++)
+                for (var step = 0; step < workerChase; step++)
                 {
                     local = set[local];
                     sum += local;
@@ -428,6 +481,61 @@ public sealed record FrameWorkload(
     }
 }
 
+/// <summary>
+/// A repeating, deterministic sequence of load phases.
+///
+/// A perfectly flat benchmark is the wrong shape for what this measures. With constant load the
+/// frame-time tail contains only system noise, so the percentile that decides every verdict is
+/// measuring the wrong thing. A real session is not flat: an engagement puts more entities in
+/// view, smoke puts heavy overdraw on the screen, and it is precisely those transitions a player
+/// feels when a machine handles them badly.
+///
+/// So the load varies — but on a fixed schedule driven by the frame index, identical on every run.
+/// That is the whole trick: realistic tails and exact repeatability at the same time. Variation
+/// that differed run to run would land in the comparison as noise and drown the change under test,
+/// which is why "just play a round" cannot be the measurement.
+/// </summary>
+public sealed record LoadPhase(string Name, int Frames, double CpuScale, int GpuClears);
+
+public sealed record LoadProfile(IReadOnlyList<LoadPhase> Phases)
+{
+    /// <summary>
+    /// Modelled on a competitive round: mostly holding an angle, punctuated by an engagement and
+    /// by heavy screen-filling effects.
+    /// </summary>
+    public static LoadProfile Competitive { get; } = new(
+    [
+        new LoadPhase("holding", 240, 1.0, 2),
+        new LoadPhase("engagement", 90, 1.9, 6),
+        new LoadPhase("holding", 180, 1.0, 2),
+        new LoadPhase("smoke", 120, 1.3, 18),
+        new LoadPhase("rotate", 150, 1.4, 4),
+        new LoadPhase("flash", 30, 2.4, 24)
+    ]);
+
+    /// <summary>Constant load, for isolating a change from load-transition behaviour.</summary>
+    public static LoadProfile Flat { get; } = new([new LoadPhase("flat", 1, 1.0, 3)]);
+
+    public int CycleFrames => Phases.Sum(phase => phase.Frames);
+
+    /// <summary>Resolves which phase a frame index falls in. Pure function of the index.</summary>
+    public LoadPhase PhaseAt(int frameIndex)
+    {
+        var position = frameIndex % Math.Max(1, CycleFrames);
+        foreach (var phase in Phases)
+        {
+            if (position < phase.Frames)
+            {
+                return phase;
+            }
+
+            position -= phase.Frames;
+        }
+
+        return Phases[^1];
+    }
+}
+
 /// <summary>How the benchmark should be run.</summary>
 /// <param name="TotalDuration">Minimum measured time, once the frame target is also met.</param>
 /// <param name="TargetFrames">
@@ -440,8 +548,11 @@ public sealed record BenchmarkOptions(
     bool AllowTearing,
     FrameWorkload? Workload = null,
     int TargetFrames = 4_000,
-    TimeSpan MaximumDuration = default)
+    TimeSpan MaximumDuration = default,
+    LoadProfile? Profile = null)
 {
+    public LoadProfile Profile { get; init; } = Profile ?? LoadProfile.Competitive;
+
     public TimeSpan MaximumDuration { get; init; } =
         MaximumDuration == default ? TimeSpan.FromSeconds(120) : MaximumDuration;
 
