@@ -242,7 +242,9 @@ public static class FrameDeliveryAnalyzer
             return;
         }
 
-        var share = 100d * dropped / (dropped + accepted);
+        // Accepted rows already include rows whose DisplayedTime is NA, so adding dropped again
+        // would understate the rate.
+        var share = 100d * dropped / accepted;
         findings.Add(new FrameDeliveryFinding(
             "DROPPED",
             "Dropped presents",

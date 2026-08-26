@@ -9,12 +9,9 @@ namespace FramePathLab.Windows.Input;
 /// <summary>
 /// Measures the mouse report stream as this PC actually delivers it.
 ///
-/// A device advertising 1000 Hz that only sustains 500 Hz, or that delivers 1000 Hz with heavy
-/// interval scatter, produces aim that feels inconsistent while every frame-time metric stays
-/// clean. That failure is invisible to frame capture because it happens before the engine samples
-/// input. This probe times WM_INPUT arrivals, so it measures delivery to a user-mode process
-/// rather than the device's electrical report rate; USB scheduling and driver batching are inside
-/// the number, and it is reported as such.
+/// This probe times WM_INPUT message arrivals to one user-mode message pump. It is intentionally
+/// reported as descriptive: it does not identify the source device, read configured polling rate,
+/// or separate USB/driver scheduling from dequeue delay.
 /// </summary>
 public sealed class InputChainProbe
 {

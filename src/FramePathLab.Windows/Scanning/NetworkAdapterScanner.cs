@@ -5,10 +5,9 @@ using Microsoft.Win32;
 namespace FramePathLab.Windows.Scanning;
 
 /// <summary>
-/// Reads the NIC settings that add delay to a tick rather than the ones that change throughput.
-/// Interrupt moderation deliberately batches receive interrupts to save CPU, and Energy Efficient
-/// Ethernet parks the link between bursts; both trade a small amount of latency for power, which
-/// is the wrong side of the trade for a competitive server tick.
+/// Inventories latency-relevant properties on the physical interface carrying a default route.
+/// The values remain diagnostic: vendor property names and effective-state semantics differ, and a
+/// direct class-registry write is not a supported way to configure or verify a network adapter.
 /// </summary>
 public static class NetworkAdapterScanner
 {
@@ -122,7 +121,31 @@ public static class NetworkAdapterScanner
             foreach (var netInterface in NetworkInterface.GetAllNetworkInterfaces())
             {
                 if (netInterface.OperationalStatus != OperationalStatus.Up
-                    || netInterface.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+                    || netInterface.NetworkInterfaceType is NetworkInterfaceType.Loopback
+                        or NetworkInterfaceType.Tunnel
+                        or NetworkInterfaceType.Ppp)
+                {
+                    continue;
+                }
+
+                IPInterfaceProperties properties;
+                try
+                {
+                    properties = netInterface.GetIPProperties();
+                }
+                catch (NetworkInformationException)
+                {
+                    continue;
+                }
+
+                // OperationalStatus.Up includes disconnected WAN miniports and virtual adapters.
+                // A usable default gateway is a tighter, reproducible proxy for the route that can
+                // actually carry the game connection without parsing localized route.exe output.
+                var hasDefaultGateway = properties.GatewayAddresses.Any(gateway =>
+                    !gateway.Address.Equals(System.Net.IPAddress.Any)
+                    && !gateway.Address.Equals(System.Net.IPAddress.IPv6Any)
+                    && !gateway.Address.Equals(System.Net.IPAddress.None));
+                if (!hasDefaultGateway)
                 {
                     continue;
                 }

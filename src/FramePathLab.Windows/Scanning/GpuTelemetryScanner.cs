@@ -122,68 +122,12 @@ public static class GpuTelemetryScanner
             .Trim();
 
     /// <summary>
-    /// Queries D3DKMT_WDDM_2_7_CAPS, the documented surface for hardware-accelerated GPU
-    /// scheduling state. This replaces inferring the setting from a registry value that only
-    /// records what was requested rather than what the driver actually enabled.
+    /// No supported public API currently used by this build proves effective HAGS state. The
+    /// D3DKMT_WDDM_2_7_CAPS structure is documented as reserved for system use, so it is deliberately
+    /// not queried and the supported Settings UI remains the authority.
     /// </summary>
     public static (bool? Supported, bool? Enabled) ReadHardwareScheduling()
-    {
-        var enumAdapters = new D3dkmtEnumAdapters2 { NumAdapters = 0, Adapters = nint.Zero };
-        if (ExpertNativeMethods.D3DKMTEnumAdapters2(ref enumAdapters) != 0 || enumAdapters.NumAdapters == 0)
-        {
-            return (null, null);
-        }
-
-        var entrySize = Marshal.SizeOf<D3dkmtAdapterInfo>();
-        var buffer = Marshal.AllocHGlobal(entrySize * (int)enumAdapters.NumAdapters);
-        var capsBuffer = Marshal.AllocHGlobal(sizeof(uint));
-        try
-        {
-            enumAdapters.Adapters = buffer;
-            if (ExpertNativeMethods.D3DKMTEnumAdapters2(ref enumAdapters) != 0)
-            {
-                return (null, null);
-            }
-
-            bool? supported = null;
-            bool? enabled = null;
-            for (var index = 0; index < enumAdapters.NumAdapters; index++)
-            {
-                var adapter = Marshal.PtrToStructure<D3dkmtAdapterInfo>(buffer + (index * entrySize));
-                Marshal.WriteInt32(capsBuffer, 0);
-
-                var query = new D3dkmtQueryAdapterInfo
-                {
-                    Adapter = adapter.Adapter,
-                    Type = ExpertNativeMethods.KmtqaiTypeWddm27Caps,
-                    PrivateDriverData = capsBuffer,
-                    PrivateDriverDataSize = sizeof(uint)
-                };
-
-                if (ExpertNativeMethods.D3DKMTQueryAdapterInfo(ref query) == 0)
-                {
-                    var caps = (uint)Marshal.ReadInt32(capsBuffer);
-                    var adapterSupported = (caps & 0x1) != 0;
-                    var adapterEnabled = (caps & 0x2) != 0;
-
-                    // Any adapter reporting support establishes support; enablement is a global
-                    // Windows setting, so a single enabled adapter settles it.
-                    supported = (supported ?? false) || adapterSupported;
-                    enabled = (enabled ?? false) || adapterEnabled;
-                }
-
-                var close = new D3dkmtCloseAdapter { Adapter = adapter.Adapter };
-                ExpertNativeMethods.D3DKMTCloseAdapter(ref close);
-            }
-
-            return (supported, enabled);
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(buffer);
-            Marshal.FreeHGlobal(capsBuffer);
-        }
-    }
+        => (null, null);
 }
 
 internal sealed record NvmlDeviceReading(
@@ -217,7 +161,12 @@ internal static class NvmlSession
 
     public static IReadOnlyList<NvmlDeviceReading> TryRead()
     {
-        if (!NativeLibrary.TryLoad("nvml.dll", out var library))
+        // Never use the default DLL search order here. The app may be started from a downloads or
+        // game directory and some scans are useful to elevated users; loading a same-name DLL from
+        // either location would turn telemetry into code execution. NVIDIA installs NVML into the
+        // protected Windows system directory on supported display-driver systems.
+        var trustedPath = Path.Combine(Environment.SystemDirectory, "nvml.dll");
+        if (!File.Exists(trustedPath) || !NativeLibrary.TryLoad(trustedPath, out var library))
         {
             return [];
         }
@@ -312,13 +261,10 @@ internal static class NvmlSession
                 observation.Append($", performance state P{pstate}");
             }
 
-            // Without resizable BAR the host can only see a small aperture into video memory,
-            // classically 256 MiB. A BAR1 region approaching the card's whole framebuffer is the
-            // unambiguous signature of the feature being active for this device.
-            bool? resizableBar = null;
+            // BAR1 telemetry describes aperture allocation only. It does not prove that the
+            // driver's per-game Resizable BAR profile is enabled for CS2.
             if (bar1Memory is not null && bar1Memory(device, out var bar1) == NvmlSuccess && bar1.Total > 0)
             {
-                resizableBar = bar1.Total > 1024UL * 1024 * 1024;
                 observation.Append($", BAR1 aperture {bar1.Total / 1024 / 1024} MiB");
             }
 
@@ -334,7 +280,7 @@ internal static class NvmlSession
                 maximumGeneration,
                 pstate.HasValue ? $"P{pstate}" : null,
                 reasons,
-                resizableBar,
+                null,
                 observation.ToString()));
         }
 

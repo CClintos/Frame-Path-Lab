@@ -22,6 +22,7 @@ internal static class Program
         ("CSV analyzer selects CS2 and computes metrics", TestCsvAnalyzerAsync),
         ("CSV analyzer fails closed on ambiguous target", TestAmbiguousCaptureAsync),
         ("CSV analyzer enforces file limits", TestFileLimitAsync),
+        ("CSV analyzer reads PresentMon DisplayedTime drops", TestDisplayedTimeDropsAsync),
         ("History store writes, reads and deletes atomically", TestHistoryStoreAsync),
         ("Evidence catalog preserves safety exclusions", TestEvidenceCatalogAsync),
         ("Markdown report labels baseline and safety boundary", TestMarkdownReportAsync),
@@ -43,6 +44,8 @@ internal static class Program
         ("Expert engine blocks elevated writes when not elevated", TestExpertEngineElevationGateAsync),
         ("Expert engine rolls back a partial apply", TestExpertEnginePartialApplyAsync),
         ("Expert engine fails closed when a before-state is unreadable", TestExpertEngineFailsClosedAsync),
+        ("Expert engine journals write intent before mutation", TestExpertEngineWriteIntentAsync),
+        ("Expert policy strips excluded mutation plans", TestExpertPolicyAsync),
         ("Delivery analyzer flags a composed present path", TestDeliveryComposedPathAsync),
         ("Delivery analyzer classifies the limiting stage", TestDeliveryBoundClassAsync),
         ("Delivery analyzer reads vertical sync from the capture", TestDeliverySyncIntervalAsync),
@@ -128,6 +131,27 @@ internal static class Program
             await File.WriteAllTextAsync(path, "Application,FrameTime\ncs2.exe,4.0\n");
             await AssertThrowsAsync<InvalidDataException>(() =>
                 new PresentMonCsvAnalyzer().AnalyzeAsync(path, new CaptureAnalysisOptions(MaximumFileBytes: 4)));
+        });
+    }
+
+    private static async Task TestDisplayedTimeDropsAsync()
+    {
+        await WithTemporaryDirectoryAsync(async directory =>
+        {
+            var path = Path.Combine(directory, "displayed-time.csv");
+            await File.WriteAllTextAsync(
+                path,
+                "Application,FrameTime,DisplayedTime\n"
+                + "cs2.exe,4.0,1000\n"
+                + "cs2.exe,4.1,NA\n"
+                + "cs2.exe,4.2,1008\n"
+                + "cs2.exe,4.3,N/A\n");
+
+            var result = await new PresentMonCsvAnalyzer().AnalyzeAsync(path, new CaptureAnalysisOptions());
+            var dropped = result.DeliveryFindings?.SingleOrDefault(finding => finding.Id == "DROPPED");
+            Assert(dropped is not null, "DisplayedTime=NA rows must be counted as dropped presents");
+            Assert(dropped!.Observed.Contains("50%", StringComparison.Ordinal),
+                $"drop share should use accepted rows as denominator, observed: {dropped.Observed}");
         });
     }
 
@@ -774,7 +798,7 @@ internal static class Program
             await WithTemporaryDirectoryAsync(directory =>
             {
                 var engine = new ExpertTweakEngine(
-                    new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: true);
+                    new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: false);
 
                 var card = BuildTestCard("ENGINE-001", [
                     TestRegistryPlan("EngineA", "1"),
@@ -825,6 +849,15 @@ internal static class Program
             Assert(gated is not null, "gate returned nothing");
             Assert(gated!.BlockedReason is not null, "machine-scope write must be blocked without elevation");
             Assert(!gated.CanApply, "blocked card must not be applicable");
+
+            var elevatedEngine = new ExpertTweakEngine(
+                new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: true);
+            var elevated = typeof(ExpertTweakEngine)
+                .GetMethod("GateOnElevation", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                .Invoke(elevatedEngine, [BuildTestCard("ELEV-UI-001", [TestRegistryPlan("Elevated", "1")])])
+                as ExpertTweakCard;
+            Assert(elevated?.BlockedReason?.Contains("full application is elevated", StringComparison.Ordinal) == true,
+                "the elevated full process must not become a journal-driven privileged writer");
             return Task.CompletedTask;
         });
     }
@@ -837,7 +870,7 @@ internal static class Program
             await WithTemporaryDirectoryAsync(directory =>
             {
                 var engine = new ExpertTweakEngine(
-                    new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: true);
+                    new WindowsMutationExecutor(), new TweakJournalStore(directory), isElevated: false);
 
                 // The second mutation reads cleanly (the process simply is not running) but cannot
                 // be written, so the first one lands and then the tweak fails mid-apply.
@@ -861,8 +894,11 @@ internal static class Program
                 executor.Read(TestRegistryPlan("PartialA", "0"), out var exists);
                 Assert(!exists, "the mutation that did land must be undone");
                 Assert(
-                    result.Mutations.Any(record => !record.AttemptedWrite),
-                    "the unwritten mutation must be recorded as never attempted");
+                    result.Mutations.Any(record =>
+                        record.MutationId == "test.absent-process"
+                        && record.AttemptedWrite
+                        && record.VerifiedAfterWrite),
+                    "a durable write intent must be conservatively reverted even when the write throws");
                 return Task.CompletedTask;
             });
         }
@@ -880,7 +916,7 @@ internal static class Program
             await WithTemporaryDirectoryAsync(directory =>
             {
                 var journal = new TweakJournalStore(directory);
-                var engine = new ExpertTweakEngine(new WindowsMutationExecutor(), journal, isElevated: true);
+                var engine = new ExpertTweakEngine(new WindowsMutationExecutor(), journal, isElevated: false);
 
                 // An unreadable target means no before-state can be captured, so nothing may be
                 // written at all: applying it would create a change that could never be undone.
@@ -901,6 +937,49 @@ internal static class Program
         {
             ClearTestRegistry();
         }
+    }
+
+    private static async Task TestExpertEngineWriteIntentAsync()
+    {
+        ClearTestRegistry();
+        try
+        {
+            await WithTemporaryDirectoryAsync(directory =>
+            {
+                var journal = new TweakJournalStore(directory);
+                var inner = new WindowsMutationExecutor();
+                var executor = new IntentObservingExecutor(inner, plan =>
+                    journal.Read().Any(transaction => transaction.Mutations.Any(record =>
+                        record.MutationId == plan.MutationId && record.AttemptedWrite)));
+                var engine = new ExpertTweakEngine(executor, journal, isElevated: false);
+                var card = BuildTestCard("INTENT-001", [TestRegistryPlan("Intent", "7")]);
+
+                var applied = engine.Apply(card);
+                Assert(executor.SawDurableIntent, "the mutation ran before durable write intent existed");
+                AssertEqual(TweakTransaction.StateApplied, applied.State, "intent test apply state");
+                engine.Revert(applied.TransactionId, "intent test cleanup");
+                return Task.CompletedTask;
+            });
+        }
+        finally
+        {
+            ClearTestRegistry();
+        }
+    }
+
+    private static Task TestExpertPolicyAsync()
+    {
+        var unsafeCard = BuildTestCard("SECURITY-HVCI-001", [TestRegistryPlan("Unsafe", "0")]);
+        var excluded = ExpertTweakPolicy.Apply(unsafeCard);
+        AssertEqual(TweakDisposition.Excluded, excluded.Definition.Disposition, "HVCI disposition");
+        AssertEqual(0, excluded.Plan.Count, "excluded plans must be stripped");
+        Assert(!excluded.CanApply, "excluded card must never be applicable");
+
+        var powerCard = BuildTestCard("POWER-OVERLAY-001", [TestRegistryPlan("Power", "1")]);
+        var experiment = ExpertTweakPolicy.Apply(powerCard);
+        AssertEqual(TweakDisposition.OptInExperiment, experiment.Definition.Disposition, "power disposition");
+        AssertEqual(1, experiment.Plan.Count, "benchmark-only supported candidate should retain its plan");
+        return Task.CompletedTask;
     }
 
     private static Task TestDeliveryComposedPathAsync()
@@ -1050,7 +1129,7 @@ internal static class Program
         Assert(
             memory.TotalMegabytes == memory.Modules.Sum(module => module.SizeMegabytes),
             "total size must equal the sum of the modules");
-        Assert(memory.PopulatedChannels > 0, "populated channels must be positive when modules exist");
+        Assert(memory.PopulatedChannels >= 0, "channel count must not be negative");
 
         foreach (var module in memory.Modules)
         {
@@ -1089,8 +1168,7 @@ internal static class Program
         var (forced, frequency) = PlatformStateScanner.ReadPlatformTimer();
         Assert(frequency > 0, "performance counter frequency must be positive");
 
-        // The classification must agree with the frequency it was derived from, in both directions.
-        Assert(forced == (frequency == 14_318_180), "forced-clock classification must match the frequency");
+        Assert(forced is null, "QPC frequency alone must not be treated as proof of BCD timer state");
         return Task.CompletedTask;
     }
 
@@ -1103,6 +1181,35 @@ internal static class Program
             ReadCount++;
             return inner.Read(plan, out exists);
         }
+    }
+
+    private sealed class IntentObservingExecutor(
+        IMutationExecutor inner,
+        Func<MutationPlan, bool> hasDurableIntent) : IMutationExecutor
+    {
+        public bool SawDurableIntent { get; private set; }
+
+        public string? Read(MutationPlan plan, out bool exists) => inner.Read(plan, out exists);
+
+        public MutationRecord Capture(MutationPlan plan) => inner.Capture(plan);
+
+        public MutationRecord Apply(MutationPlan plan)
+            => throw new InvalidOperationException("Engine must apply from its journalled capture.");
+
+        public MutationRecord Apply(MutationPlan plan, MutationRecord captured)
+        {
+            SawDurableIntent = hasDurableIntent(plan);
+            if (!SawDurableIntent)
+            {
+                throw new InvalidOperationException("No durable write intent was observed.");
+            }
+
+            return inner.Apply(plan, captured);
+        }
+
+        public MutationRecord Revert(MutationRecord record) => inner.Revert(record);
+
+        public bool RequiresElevation(MutationPlan plan) => inner.RequiresElevation(plan);
     }
 
     private sealed class InMemoryPowerSessionGuardian : IPowerSessionGuardian

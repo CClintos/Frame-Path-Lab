@@ -8,7 +8,7 @@ namespace FramePathLab.Core.Analysis;
 
 public sealed class PresentMonCsvAnalyzer : ICaptureAnalyzer
 {
-    public const string SchemaVersion = "presentmon-import-v1";
+    public const string SchemaVersion = "presentmon-import-v2";
 
     private static readonly string[] FrameTimeCandidates =
     [
@@ -46,7 +46,6 @@ public sealed class PresentMonCsvAnalyzer : ICaptureAnalyzer
             throw new InvalidDataException($"Capture exceeds the {options.MaximumFileBytes:N0}-byte limit.");
         }
 
-        var hash = await ComputeSha256Async(file.FullName, cancellationToken).ConfigureAwait(false);
         await using var stream = new FileStream(
             file.FullName,
             FileMode.Open,
@@ -54,6 +53,11 @@ public sealed class PresentMonCsvAnalyzer : ICaptureAnalyzer
             FileShare.Read,
             bufferSize: 65_536,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
+        // Hash and analyze the same open handle. Hashing by path and reopening allowed the file to
+        // be replaced between provenance capture and analysis.
+        var hash = Convert.ToHexStringLower(
+            await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
+        stream.Position = 0;
         using var reader = new StreamReader(stream, detectEncodingFromByteOrderMarks: true);
 
         var headerLine = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)
@@ -79,6 +83,7 @@ public sealed class PresentMonCsvAnalyzer : ICaptureAnalyzer
         var allowsTearingIndex = FindIndex(headerMap, "AllowsTearing");
         var syncIntervalIndex = FindIndex(headerMap, "SyncInterval");
         var droppedIndex = FindIndex(headerMap, "Dropped", "AllowsTearingDropped");
+        var displayedTimeIndex = FindIndex(headerMap, "DisplayedTime");
         var untilDisplayedIndex = FindIndex(headerMap, "MsUntilDisplayed", "UntilDisplayed");
         var renderPresentIndex = FindIndex(headerMap, "MsRenderPresentLatency", "RenderPresentLatency");
 
@@ -133,9 +138,11 @@ public sealed class PresentMonCsvAnalyzer : ICaptureAnalyzer
             var gpuBusy = ReadOptionalDouble(cells, gpuBusyIndex);
             var presentMode = ReadOptionalText(cells, presentModeIndex);
             var allowsTearing = ReadOptionalBoolean(cells, allowsTearingIndex);
+            var dropped = ReadOptionalBoolean(cells, droppedIndex)
+                          ?? ReadDroppedFromDisplayedTime(cells, displayedTimeIndex);
             var delivery = new DeliverySample(
                 ReadOptionalDouble(cells, syncIntervalIndex),
-                ReadOptionalBoolean(cells, droppedIndex),
+                dropped,
                 ReadOptionalDouble(cells, untilDisplayedIndex),
                 ReadOptionalDouble(cells, renderPresentIndex));
             all.Add(frameTime, cpuBusy, gpuBusy, presentMode, allowsTearing, delivery);
@@ -349,6 +356,23 @@ public sealed class PresentMonCsvAnalyzer : ICaptureAnalyzer
         return null;
     }
 
+    private static bool? ReadDroppedFromDisplayedTime(IReadOnlyList<string> cells, int index)
+    {
+        if (index < 0 || index >= cells.Count)
+        {
+            return null;
+        }
+
+        var text = cells[index].Trim();
+        if (text.Equals("NA", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("N/A", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return TryParseFiniteNonNegative(text, out _) ? false : null;
+    }
+
     private static bool TryParseFinitePositive(string text, out double value)
         => double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value)
            && double.IsFinite(value)
@@ -373,19 +397,6 @@ public sealed class PresentMonCsvAnalyzer : ICaptureAnalyzer
     private static bool IsCs2(string application)
         => application.Equals("cs2.exe", StringComparison.OrdinalIgnoreCase)
            || application.Equals("cs2", StringComparison.OrdinalIgnoreCase);
-
-    private static async Task<string> ComputeSha256Async(string path, CancellationToken cancellationToken)
-    {
-        await using var stream = new FileStream(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            bufferSize: 65_536,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        var hash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
-        return Convert.ToHexStringLower(hash);
-    }
 
     /// <summary>Optional per-row delivery fields, absent in older collector schemas.</summary>
     private readonly record struct DeliverySample(

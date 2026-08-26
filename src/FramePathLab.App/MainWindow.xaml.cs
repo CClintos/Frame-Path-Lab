@@ -63,6 +63,11 @@ public partial class MainWindow : Window
 
     private async void ApplyExpertTweak_Click(object sender, RoutedEventArgs e)
     {
+        if (_viewModel.IsBusy)
+        {
+            return;
+        }
+
         if (sender is not FrameworkElement { DataContext: ExpertTweakDisplay display })
         {
             return;
@@ -101,14 +106,33 @@ public partial class MainWindow : Window
             return;
         }
 
-        await _viewModel.ApplyExpertTweakAsync(display);
+        try
+        {
+            await _viewModel.ApplyExpertTweakAsync(display);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, exception.Message, "Change was not applied", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private async void RevertExpertTweak_Click(object sender, RoutedEventArgs e)
     {
+        if (_viewModel.IsBusy)
+        {
+            return;
+        }
+
         if (sender is FrameworkElement { DataContext: ExpertTransactionDisplay transaction })
         {
-            await _viewModel.RevertExpertTransactionAsync(transaction.TransactionId);
+            try
+            {
+                await _viewModel.RevertExpertTransactionAsync(transaction.TransactionId);
+            }
+            catch (Exception exception)
+            {
+                MessageBox.Show(this, exception.Message, "Revert needs attention", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
     }
 

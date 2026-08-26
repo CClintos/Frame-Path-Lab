@@ -143,7 +143,7 @@ public sealed record SystemLatencyReport(
     double CurrentTimerResolutionMs,
     double MinimumTimerResolutionMs,
     double MaximumTimerResolutionMs,
-    bool GlobalTimerRequestsHonored,
+    bool LegacyGlobalTimerPolicyPresent,
     double SchedulerJitterMedianMs,
     double SchedulerJitterP99Ms,
     double SchedulerJitterWorstMs,
@@ -151,8 +151,7 @@ public sealed record SystemLatencyReport(
     string Observation)
 {
     /// <summary>
-    /// Windows 11 22H2 made timer-resolution requests per-process. A game asking for 0.5 ms no
-    /// longer necessarily gets a 0.5 ms system tick, which shows up as scheduling jitter.
+    /// Describes the queried system timer period only; it is not a performance grade.
     /// </summary>
     public bool IsCoarseTimer => CurrentTimerResolutionMs > 1.2;
 }
@@ -179,21 +178,22 @@ public sealed record MemoryConfiguration(
         => new(false, [], 0, 0, 0, 0, reason);
 
     /// <summary>
-    /// True when the modules are running below the speed they advertise, which is what a kit looks
-    /// like when its rated profile was never enabled in firmware.
+    /// True when configured speed is below the maximum speed reported through SMBIOS. This is a
+    /// consistency flag, not proof that an XMP/EXPO profile exists or is stable.
     /// </summary>
     public bool IsBelowRatedSpeed
         => Available && RatedSpeedMts > 0 && ConfiguredSpeedMts > 0
            && ConfiguredSpeedMts < RatedSpeedMts - 40;
 
-    /// <summary>A single populated channel halves available bandwidth regardless of module count.</summary>
-    public bool IsSingleChannel => Available && Modules.Count > 0 && PopulatedChannels <= 1;
+    /// <summary>Only a positively parsed single channel is classified; zero means unknown.</summary>
+    public bool IsSingleChannel => Available && Modules.Count > 0 && PopulatedChannels == 1;
 
     public string Describe()
         => !Available
             ? UnavailableReason
-            : $"{Modules.Count} module(s), {TotalMegabytes / 1024} GiB across {PopulatedChannels} channel(s), "
-              + $"running {ConfiguredSpeedMts} MT/s of {RatedSpeedMts} MT/s rated";
+            : $"{Modules.Count} module(s), {TotalMegabytes / 1024} GiB across "
+              + (PopulatedChannels > 0 ? $"{PopulatedChannels} inferred channel(s), " : "an unknown channel layout, ")
+              + $"running {ConfiguredSpeedMts} MT/s; SMBIOS maximum {RatedSpeedMts} MT/s";
 }
 
 /// <summary>Whether Steam is currently moving bytes, which is a common cause of in-game stutter.</summary>

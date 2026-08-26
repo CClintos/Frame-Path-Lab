@@ -50,7 +50,7 @@ public static class DisplayTimingScanner
                 continue;
             }
 
-            var (width, height) = ReadSourceMode(modes, modeCount, path);
+            var (width, height, isPrimary) = ReadSourceMode(modes, modeCount, path);
             var (numerator, denominator) = ResolveRefresh(modes, modeCount, path);
             var (advancedSupported, advancedEnabled) = ReadAdvancedColor(path);
 
@@ -61,7 +61,7 @@ public static class DisplayTimingScanner
                 denominator,
                 width,
                 height,
-                results.Count == 0,
+                isPrimary,
                 advancedSupported,
                 advancedEnabled));
         }
@@ -91,7 +91,7 @@ public static class DisplayTimingScanner
             : (0u, 1u);
     }
 
-    private static (int Width, int Height) ReadSourceMode(
+    private static (int Width, int Height, bool IsPrimary) ReadSourceMode(
         DisplayConfigModeInfo[] modes,
         uint modeCount,
         DisplayConfigPathInfo path)
@@ -100,10 +100,12 @@ public static class DisplayTimingScanner
         if (modeIndex < modeCount && modes[modeIndex].InfoType == 1)
         {
             var source = modes[modeIndex].Mode.SourceMode;
-            return ((int)source.Width, (int)source.Height);
+            // CCD defines the primary desktop source as the source whose desktop position is 0,0;
+            // QueryDisplayConfig does not promise that path zero is primary.
+            return ((int)source.Width, (int)source.Height, source.Position.X == 0 && source.Position.Y == 0);
         }
 
-        return (0, 0);
+        return (0, 0, false);
     }
 
     private static string ReadSourceName(DisplayConfigPathInfo path)

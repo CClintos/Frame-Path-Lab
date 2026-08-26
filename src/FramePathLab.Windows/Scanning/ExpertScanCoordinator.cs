@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using FramePathLab.Core.Models;
 using FramePathLab.Windows.Input;
 
@@ -40,8 +39,10 @@ public sealed class ExpertScanCoordinator
     {
         ArgumentNullException.ThrowIfNull(environment);
 
-        var gameProcessId = ResolveGameProcessId();
-        var cpu = CpuTopologyScanner.Scan(gameProcessId);
+        // The scanner deliberately does not open or inspect the running game process. Topology is
+        // resolved against the current process/system mask only; game affinity/EcoQoS are excluded.
+        int? gameProcessId = null;
+        var cpu = CpuTopologyScanner.Scan(null);
         var timings = DisplayTimingScanner.Scan();
         var adapters = environment.Displays.Select(display => display.AdapterDescription).ToArray();
         var gpus = GpuTelemetryScanner.Scan(adapters);
@@ -59,7 +60,10 @@ public sealed class ExpertScanCoordinator
         var memory = SmbiosMemoryScanner.Scan();
         var steam = PlatformStateScanner.ReadSteamActivity();
         var (forcedClock, counterFrequency) = PlatformStateScanner.ReadPlatformTimer();
-        var (msiEnabled, msiPath, msiObservation) = PlatformStateScanner.ReadGpuInterruptMode();
+        bool? msiEnabled = null;
+        string? msiPath = null;
+        const string msiObservation =
+            "Display-adapter interrupt registry state is not inferred; use ETW for DPC/ISR diagnosis.";
 
         return new ExpertScanContext(
             environment,
@@ -95,19 +99,4 @@ public sealed class ExpertScanCoordinator
             "Report-rate measurement was not run for this scan.");
     }
 
-    private int? ResolveGameProcessId()
-    {
-        var processes = Process.GetProcessesByName(_gameExecutableName);
-        try
-        {
-            return processes.Length > 0 ? processes[0].Id : null;
-        }
-        finally
-        {
-            foreach (var process in processes)
-            {
-                process.Dispose();
-            }
-        }
-    }
 }

@@ -17,6 +17,7 @@ public sealed class ExpertTweakEngine
     private readonly IMutationExecutor _executor;
     private readonly TweakJournalStore _journal;
     private readonly bool _isElevated;
+    private readonly object _operationGate = new();
 
     public ExpertTweakEngine(IMutationExecutor executor, TweakJournalStore journal, bool isElevated)
     {
@@ -37,13 +38,29 @@ public sealed class ExpertTweakEngine
     /// </summary>
     private ExpertTweakCard GateOnElevation(ExpertTweakCard card)
     {
-        if (_isElevated || card.Plan.Count == 0 || card.BlockedReason is not null)
+        if (card.Plan.Count == 0 || card.BlockedReason is not null)
         {
             return card;
         }
 
+        // The desktop/CLI process reads a user-writable journal. Running the whole process elevated
+        // would turn that data into a privileged command channel. Machine writes require a future
+        // restricted broker that resolves allowlisted action IDs rather than trusting paths.
+        if (_isElevated)
+        {
+            return card with
+            {
+                BlockedReason = "Automatic expert writes are disabled while the full application is elevated. "
+                                + "Run normally; machine-scope writes require a future restricted broker."
+            };
+        }
+
         return card.Plan.Any(_executor.RequiresElevation)
-            ? card with { BlockedReason = "Restart FramePath Lab as administrator to apply this change." }
+            ? card with
+            {
+                BlockedReason = "Machine-scope writes are unavailable in this build. Do not restart the full app "
+                                + "as administrator; a future restricted broker must own privileged actions."
+            }
             : card;
     }
 
@@ -54,6 +71,14 @@ public sealed class ExpertTweakEngine
 
     public TweakTransaction Apply(ExpertTweakCard card)
     {
+        lock (_operationGate)
+        {
+            return ApplyCore(card);
+        }
+    }
+
+    private TweakTransaction ApplyCore(ExpertTweakCard card)
+    {
         ArgumentNullException.ThrowIfNull(card);
         if (!card.CanApply)
         {
@@ -61,27 +86,26 @@ public sealed class ExpertTweakEngine
                 card.BlockedReason ?? $"{card.Definition.Title} has no applicable change.");
         }
 
+        var outstanding = OutstandingTransactions();
+        var overlap = outstanding
+            .SelectMany(transaction => transaction.Mutations)
+            .FirstOrDefault(existing => card.Plan.Any(plan =>
+                plan.Kind == existing.Kind
+                && TargetsOverlap(plan, existing)
+                && string.Equals(plan.ValueName, existing.ValueName, StringComparison.Ordinal)));
+        if (overlap is not null)
+        {
+            throw new InvalidOperationException(
+                $"{overlap.Description} already has an outstanding transaction. Revert it before applying another change.");
+        }
+
         var transactionId = Guid.NewGuid();
-        var captured = new List<MutationRecord>();
+        var captured = new List<MutationRecord>(card.Plan.Count);
 
         // Capture every before-state first. If any value cannot be read, nothing is written at all.
         foreach (var plan in card.Plan)
         {
-            var before = _executor.Read(plan, out var exists);
-            captured.Add(new MutationRecord(
-                plan.MutationId,
-                plan.Kind,
-                plan.Target,
-                plan.ValueName,
-                plan.ValueType,
-                plan.Description,
-                exists,
-                before,
-                plan.DesiredValue,
-                null,
-                false,
-                "Captured; not yet applied.",
-                AttemptedWrite: false));
+            captured.Add(_executor.Capture(plan));
         }
 
         var pending = new TweakTransaction(
@@ -96,13 +120,38 @@ public sealed class ExpertTweakEngine
             "Prepared. Applying now.");
         _journal.Upsert(pending);
 
-        var applied = new List<MutationRecord>();
+        var progress = captured.ToList();
         Exception? failure = null;
-        foreach (var plan in card.Plan)
+        for (var index = 0; index < card.Plan.Count; index++)
         {
+            var plan = card.Plan[index];
             try
             {
-                applied.Add(_executor.Apply(plan));
+                // Persist write intent before the write. If the process dies at any later boundary,
+                // recovery assumes this value may have landed and safely compare-before-reverts it.
+                progress[index] = progress[index] with
+                {
+                    AttemptedWrite = true,
+                    Observation = "Write intent recorded; this value may be in progress."
+                };
+                _journal.Upsert(pending with
+                {
+                    Mutations = progress.ToArray(),
+                    LastObservation = $"Applying {plan.Description}."
+                });
+
+                var applied = _executor.Apply(plan, captured[index]);
+                progress[index] = applied;
+                _journal.Upsert(pending with
+                {
+                    Mutations = progress.ToArray(),
+                    LastObservation = applied.Observation
+                });
+
+                if (!applied.VerifiedAfterWrite)
+                {
+                    throw new InvalidOperationException(applied.Observation);
+                }
             }
             catch (Exception exception)
             {
@@ -111,19 +160,11 @@ public sealed class ExpertTweakEngine
             }
         }
 
-        // Carry forward captures for anything that was never reached, so a partial apply is still
-        // fully described in the ledger.
-        foreach (var capture in captured.Where(entry => applied.All(record => record.MutationId != entry.MutationId)))
-        {
-            applied.Add(capture);
-        }
-
-        var allVerified = failure is null && applied.All(record =>
-            record.VerifiedAfterWrite || !card.Plan.Any(plan => plan.MutationId == record.MutationId));
+        var allVerified = failure is null && progress.All(record => record.VerifiedAfterWrite);
 
         var result = pending with
         {
-            Mutations = applied,
+            Mutations = progress,
             State = failure is null && allVerified
                 ? TweakTransaction.StateApplied
                 : TweakTransaction.StatePartiallyApplied,
@@ -131,7 +172,7 @@ public sealed class ExpertTweakEngine
                 ? $"Stopped after a failure: {failure.Message}. Revert to restore captured values."
                 : allVerified
                     ? "Applied and verified by read-back."
-                    : "Applied, but at least one value did not verify on read-back."
+                    : "A value did not verify on read-back; automatic rollback is required."
         };
 
         _journal.Upsert(result);
@@ -139,14 +180,34 @@ public sealed class ExpertTweakEngine
         if (failure is not null)
         {
             // Roll the partial apply back immediately rather than leaving the machine mixed.
-            return Revert(result.TransactionId, $"automatic rollback after {failure.Message}");
+            return RevertCore(result.TransactionId, $"automatic rollback after {failure.Message}");
         }
 
         return result;
     }
 
+    private static bool TargetsOverlap(MutationPlan plan, MutationRecord existing)
+        => string.Equals(plan.Target, existing.Target, StringComparison.OrdinalIgnoreCase)
+           || (plan.Kind == MutationKind.PowerSchemeValue
+               && existing.Target.EndsWith($"|{plan.Target}", StringComparison.OrdinalIgnoreCase));
+
     public TweakTransaction Revert(Guid transactionId, string reason)
     {
+        lock (_operationGate)
+        {
+            return RevertCore(transactionId, reason);
+        }
+    }
+
+    private TweakTransaction RevertCore(Guid transactionId, string reason)
+    {
+        if (_isElevated)
+        {
+            throw new InvalidOperationException(
+                "Journal-driven expert reverts are disabled while the full application is elevated. "
+                + "Run normally; privileged recovery requires a future restricted allowlisted broker.");
+        }
+
         var transaction = _journal.Read().FirstOrDefault(entry => entry.TransactionId == transactionId)
                           ?? throw new InvalidOperationException("No such transaction is recorded.");
 

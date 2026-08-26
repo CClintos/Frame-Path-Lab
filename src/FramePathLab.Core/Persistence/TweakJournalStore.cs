@@ -10,7 +10,9 @@ namespace FramePathLab.Core.Persistence;
 ///
 /// The ledger is the reason an apply is safe to offer: it survives a crash, a reboot and an
 /// uninstall of the running build, so a change can always be traced back to its exact prior value
-/// and undone. It is integrity-checked, atomically replaced, and bounded in size.
+/// and undone. Its SHA detects accidental corruption, not malicious same-user modification; the
+/// full application therefore never treats this user-writable file as a privileged command source.
+/// Writes are atomically replaced and bounded in size.
 /// </summary>
 public sealed class TweakJournalStore
 {
@@ -108,8 +110,8 @@ public sealed class TweakJournalStore
             if (!string.Equals(recomputed, envelope.Sha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidDataException(
-                    "The expert-tweak journal failed its integrity check and was not used. "
-                    + "Reverting from a tampered ledger could write the wrong prior value.");
+                    "The expert-tweak journal failed its corruption check and was not used. "
+                    + "Reverting from a modified ledger could write the wrong prior value.");
             }
 
             return envelope.Transactions.ToList();

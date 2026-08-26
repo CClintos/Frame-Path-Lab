@@ -29,30 +29,59 @@ public sealed record ExpertTweakDisplay(ExpertTweakCard Card)
 
     public bool HasBlockedReason => Card.BlockedReason is not null;
 
-    public string StateLabel => Card.Reading.State switch
+    public string DispositionReason => Card.Definition.DispositionReason;
+
+    public string DispositionLabel => Card.Definition.Disposition switch
     {
-        TweakState.Suboptimal => "CHANGE AVAILABLE",
-        TweakState.Optimal => "ALREADY SET",
-        TweakState.Unknown => "NOT READABLE",
-        TweakState.NotApplicable => "NOT APPLICABLE",
-        TweakState.Blocked => "BLOCKED",
-        _ => "UNKNOWN"
+        TweakDisposition.RecommendDefault => "DEFAULT RECOMMENDATION",
+        TweakDisposition.OptInExperiment => "A/B EXPERIMENT",
+        TweakDisposition.GuidedAction => "GUIDED ACTION",
+        TweakDisposition.DiagnosticOnly => "DIAGNOSTIC ONLY",
+        TweakDisposition.Excluded => "EXCLUDED",
+        _ => "UNCLASSIFIED"
     };
 
-    public string StateForeground => Card.Reading.State switch
+    public string StateLabel => Card.Definition.Disposition switch
     {
-        TweakState.Suboptimal => "#7EDBFF",
-        TweakState.Optimal => "#82E6B1",
-        TweakState.Blocked => "#FFD477",
-        _ => "#9FB0C6"
+        TweakDisposition.Excluded => "EXCLUDED",
+        TweakDisposition.DiagnosticOnly => "DIAGNOSTIC",
+        TweakDisposition.GuidedAction => "CHECK MANUALLY",
+        TweakDisposition.OptInExperiment when Card.Reading.State == TweakState.Suboptimal => "EXPERIMENT AVAILABLE",
+        _ => Card.Reading.State switch
+        {
+            TweakState.Suboptimal => "CHANGE AVAILABLE",
+            TweakState.Optimal => "ALREADY SET",
+            TweakState.Unknown => "NOT READABLE",
+            TweakState.NotApplicable => "NOT APPLICABLE",
+            TweakState.Blocked => "BLOCKED",
+            _ => "UNKNOWN"
+        }
     };
 
-    public string StateBackground => Card.Reading.State switch
+    public string StateForeground => Card.Definition.Disposition switch
     {
-        TweakState.Suboptimal => "#12374A",
-        TweakState.Optimal => "#12382A",
-        TweakState.Blocked => "#3B2E13",
-        _ => "#212C3B"
+        TweakDisposition.Excluded => "#FF9F9A",
+        TweakDisposition.DiagnosticOnly or TweakDisposition.GuidedAction => "#9FB0C6",
+        _ => Card.Reading.State switch
+        {
+            TweakState.Suboptimal => "#7EDBFF",
+            TweakState.Optimal => "#82E6B1",
+            TweakState.Blocked => "#FFD477",
+            _ => "#9FB0C6"
+        }
+    };
+
+    public string StateBackground => Card.Definition.Disposition switch
+    {
+        TweakDisposition.Excluded => "#401E22",
+        TweakDisposition.DiagnosticOnly or TweakDisposition.GuidedAction => "#212C3B",
+        _ => Card.Reading.State switch
+        {
+            TweakState.Suboptimal => "#12374A",
+            TweakState.Optimal => "#12382A",
+            TweakState.Blocked => "#3B2E13",
+            _ => "#212C3B"
+        }
     };
 
     public string RiskLabel => Card.Definition.Risk switch

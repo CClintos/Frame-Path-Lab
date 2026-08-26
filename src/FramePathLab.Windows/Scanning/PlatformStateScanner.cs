@@ -7,7 +7,7 @@ namespace FramePathLab.Windows.Scanning;
 
 /// <summary>
 /// Platform-level readings that do not belong to the CPU, GPU, display or input scanners: whether
-/// a forced platform timer is in effect, whether the GPU is using message-signalled interrupts, and
+/// timer-counter context, whether the GPU is using message-signalled interrupts, and
 /// whether Steam is currently moving bytes.
 /// </summary>
 public static partial class PlatformStateScanner
@@ -16,15 +16,14 @@ public static partial class PlatformStateScanner
     private const string PciEnumPath = @"SYSTEM\CurrentControlSet\Enum\PCI";
 
     /// <summary>
-    /// The frequency the high-resolution counter reports betrays which hardware timer the platform
-    /// is driving it from. Modern Windows normalises the invariant-TSC path to 10 MHz; the legacy
-    /// 14.318 MHz value is the signature of the platform clock having been forced on in boot
-    /// configuration, which is a change a "tweak pack" makes and rarely undoes.
+    /// QPC frequency is useful capture provenance, but Microsoft does not document it as an
+    /// authoritative read of the BCD useplatformclock flag. The app therefore reports the flag as
+    /// unknown instead of converting one observed frequency into a boot-configuration claim.
     /// </summary>
-    public static (bool ForcedPlatformClock, long Frequency) ReadPlatformTimer()
+    public static (bool? ForcedPlatformClock, long Frequency) ReadPlatformTimer()
     {
         var frequency = Stopwatch.Frequency;
-        return (frequency == 14_318_180, frequency);
+        return (null, frequency);
     }
 
     /// <summary>

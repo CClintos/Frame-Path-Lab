@@ -157,10 +157,13 @@ public sealed class MainViewModel : ObservableObject
         }
 
         var available = cards.Count(card => card.CanApply);
-        var blocked = cards.Count(card => card.BlockedReason is not null);
+        var experiments = cards.Count(card => card.Definition.Disposition == TweakDisposition.OptInExperiment);
+        var guided = cards.Count(card => card.Definition.Disposition == TweakDisposition.GuidedAction);
+        var excluded = cards.Count(card => card.Definition.Disposition == TweakDisposition.Excluded);
         var unreadable = cards.Count(card => card.Reading.State == TweakState.Unknown);
-        ExpertSummary = $"{available} change{(available == 1 ? string.Empty : "s")} available · "
-                        + $"{blocked} blocked · {unreadable} not readable on this system · "
+        ExpertSummary = $"{available} benchmark-only change{(available == 1 ? string.Empty : "s")} available · "
+                        + $"{experiments} experiments · {guided} guided · {excluded} excluded · "
+                        + $"{unreadable} not readable · "
                         + $"{cards.Count} checked in total.";
 
         var cpu = _expertContext.Cpu;
@@ -198,10 +201,7 @@ public sealed class MainViewModel : ObservableObject
                 ? $"{display.Title}: {transaction.LastObservation}"
                 : $"{display.Title} did not fully apply. {transaction.LastObservation}";
 
-            if (_expertContext is not null)
-            {
-                RebuildExpertCards();
-            }
+            await RefreshExpertContextAfterMutationAsync();
         }
         finally
         {
@@ -220,7 +220,7 @@ public sealed class MainViewModel : ObservableObject
             StatusText = transaction.LastObservation;
             if (_expertContext is not null)
             {
-                RebuildExpertCards();
+                await RefreshExpertContextAfterMutationAsync();
             }
             else
             {
@@ -231,6 +231,17 @@ public sealed class MainViewModel : ObservableObject
         {
             IsBusy = false;
         }
+    }
+
+    private async Task RefreshExpertContextAfterMutationAsync()
+    {
+        var snapshot = _currentScan?.Snapshot ?? (await _scanCoordinator.RunAsync()).Snapshot;
+        _expertContext = await _expertScanCoordinator.ScanAsync(
+            snapshot,
+            measureInput: false,
+            measureScheduler: false,
+            TimeSpan.Zero);
+        RebuildExpertCards();
     }
 
     private async Task RevertAllExpertAsync()
@@ -468,6 +479,7 @@ public sealed class MainViewModel : ObservableObject
 
         await RefreshHistoryAsync();
         await ScanAsync();
+        RefreshExpertTransactions();
 
         if (recoveryFailure is not null)
         {

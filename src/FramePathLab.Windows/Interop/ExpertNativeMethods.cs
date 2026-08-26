@@ -86,14 +86,13 @@ internal static class ExpertNativeMethods
     [DllImport("powrprof.dll")]
     internal static extern uint PowerSetActiveScheme(nint userRootPowerKey, ref Guid schemeGuid);
 
-    // Windows 11 "Power mode" is an overlay on top of the plan. These exports are stable across
-    // Windows 10 1709+ and Windows 11 but are not published on Microsoft Learn, so every caller
-    // treats a non-zero return as "unsupported here" rather than as a hard failure.
+    // Documented Windows 11 user power-mode APIs. This records the user's AC preference; Windows
+    // may still override the effective mode in response to thermal, battery or policy signals.
     [DllImport("powrprof.dll")]
-    internal static extern uint PowerGetEffectiveOverlayScheme(out Guid effectiveOverlayGuid);
+    internal static extern uint PowerGetUserConfiguredACPowerMode(out Guid powerModeGuid);
 
     [DllImport("powrprof.dll")]
-    internal static extern uint PowerSetActiveOverlayScheme(Guid overlaySchemeGuid);
+    internal static extern uint PowerSetUserConfiguredACPowerMode(ref Guid powerModeGuid);
 
     // ---- Timer resolution -----------------------------------------------------------------
     [DllImport("ntdll.dll")]

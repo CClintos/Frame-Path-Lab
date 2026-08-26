@@ -44,13 +44,13 @@ public static class ExpertTweakCatalog
         "Microsoft processor power management options",
         new Uri("https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/processor-power-management-options"));
 
+    private static readonly EvidenceSource MicrosoftPowerMode = new(
+        "Microsoft PowerGetUserConfiguredACPowerMode",
+        new Uri("https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powergetuserconfiguredacpowermode"));
+
     private static readonly EvidenceSource MicrosoftHags = new(
         "Microsoft hardware-accelerated GPU scheduling",
         new Uri("https://devblogs.microsoft.com/directx/hardware-accelerated-gpu-scheduling/"));
-
-    private static readonly EvidenceSource MicrosoftWddmCaps = new(
-        "Microsoft D3DKMT_WDDM_2_7_CAPS",
-        new Uri("https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmdt/ns-d3dkmdt-d3dkmt_wddm_2_7_caps"));
 
     private static readonly EvidenceSource MicrosoftEcoQoS = new(
         "Microsoft PROCESS_POWER_THROTTLING_STATE",
@@ -121,6 +121,7 @@ public static class ExpertTweakCatalog
         cards.AddRange(NetworkTweaks(context, reader));
 
         return cards
+            .Select(ExpertTweakPolicy.Apply)
             .OrderBy(card => StateOrder(card.Reading.State))
             .ThenBy(card => card.Definition.Category, StringComparer.OrdinalIgnoreCase)
             .ThenBy(card => card.Definition.Title, StringComparer.OrdinalIgnoreCase)
@@ -177,55 +178,15 @@ public static class ExpertTweakCatalog
 
         var preferredMask = cpu.PreferredAffinityMask;
         var recommended = $"0x{preferredMask:X} ({System.Numerics.BitOperations.PopCount(preferredMask)} logical processors)";
-
-        if (context.GameProcessId is null || cpu.GameAffinityMask is null)
-        {
-            return new ExpertTweakCard(
-                definition,
-                new TweakReading(
-                    TweakState.Blocked,
-                    "Game is not running",
-                    recommended,
-                    cpu.PreferredGroupReason + " Start the game, then rescan to apply placement."),
-                [],
-                "The target process must be running before affinity can be captured and changed.");
-        }
-
-        var current = cpu.GameAffinityMask.Value;
-        if (current == preferredMask)
-        {
-            return new ExpertTweakCard(
-                definition,
-                new TweakReading(
-                    TweakState.Optimal,
-                    $"0x{current:X}",
-                    recommended,
-                    "The game is already confined to the preferred core group."),
-                [],
-                null);
-        }
-
-        var plan = new[]
-        {
-            new MutationPlan(
-                "CPU-PLACEMENT-001.affinity",
-                MutationKind.ProcessAffinity,
-                context.GameExecutableName,
-                "ProcessorAffinity",
-                preferredMask.ToString(CultureInfo.InvariantCulture),
-                "Mask",
-                $"Confine {context.GameExecutableName} to core group {cpu.PreferredGroupIndex}")
-        };
-
         return new ExpertTweakCard(
             definition,
             new TweakReading(
-                TweakState.Suboptimal,
-                $"0x{current:X} ({System.Numerics.BitOperations.PopCount(current)} logical processors)",
-                recommended,
-                cpu.PreferredGroupReason),
-            plan,
-            null);
+                TweakState.Unknown,
+                $"Preferred topology mask would be {recommended}",
+                "Leave game affinity unmanaged",
+                cpu.PreferredGroupReason + " The running game process is not opened or inspected."),
+            [],
+            "Excluded: affinity folklore and game-process mutation are outside the product boundary.");
     }
 
     private static ExpertTweakCard CoreParking(ExpertScanContext context, ITweakStateReader reader)
@@ -366,6 +327,7 @@ public static class ExpertTweakCatalog
 
     private static ExpertTweakCard ProcessPowerThrottling(ExpertScanContext context, ITweakStateReader reader)
     {
+        _ = reader;
         var definition = new ExpertTweakDefinition(
             "CPU-ECOQOS-001",
             "CPU",
@@ -382,38 +344,15 @@ public static class ExpertTweakCatalog
             false,
             [MicrosoftEcoQoS]);
 
-        var plan = new MutationPlan(
-            "CPU-ECOQOS-001.state",
-            MutationKind.ProcessPowerThrottling,
-            context.GameExecutableName,
-            "ExecutionSpeedThrottling",
-            "0",
-            "Flag",
-            $"Clear efficiency-mode throttling on {context.GameExecutableName}");
-
-        var current = reader.Read(plan, out var exists);
-        if (!exists || current is null)
-        {
-            return new ExpertTweakCard(
-                definition,
-                new TweakReading(TweakState.Blocked, "Game is not running", "Throttling cleared",
-                    "Start the game, then rescan."),
-                [],
-                "The target process must be running.");
-        }
-
-        var throttled = current == "1";
         return new ExpertTweakCard(
             definition,
             new TweakReading(
-                throttled ? TweakState.Suboptimal : TweakState.Optimal,
-                throttled ? "Efficiency throttling active" : "Normal quality of service",
-                "Throttling cleared",
-                throttled
-                    ? "The process is running under an explicit efficiency cap."
-                    : "No efficiency cap is applied to this process."),
-            throttled ? [plan] : [],
-            null);
+                TweakState.Unknown,
+                "Game process not inspected",
+                "Leave game process scheduling under Windows and the game",
+                $"FramePath Lab does not open {context.GameExecutableName} to query or change EcoQoS."),
+            [],
+            "Excluded: game-process manipulation is outside the product integrity boundary.");
     }
 
     private static ExpertTweakCard ClockCeiling(ExpertScanContext context)
@@ -466,25 +405,25 @@ public static class ExpertTweakCatalog
         var definition = new ExpertTweakDefinition(
             "POWER-OVERLAY-001",
             "Windows",
-            "Windows power mode overlay",
-            "Modern Windows layers a power mode on top of the selected power plan. The overlay, not the plan, is "
-            + "what drives the energy-performance preference the platform actually acts on.",
-            "Switching the plan while the overlay stays on a balanced or efficiency mode frequently changes "
-            + "nothing measurable. Setting the overlay is what moves the platform's performance bias.",
+            "Windows AC power mode preference",
+            "Windows 11 records a user-selected AC power mode separately from the legacy power plan. The system "
+            + "may still override that preference in response to policy, thermal or battery signals.",
+            "Best performance can reduce frequency ramp-up delay on a platform that honors the preference, but "
+            + "the effect is configuration-specific and must be measured rather than assumed.",
             "Raises power draw and temperature across the whole session, not just in game.",
             TweakRisk.Moderate,
-            TweakScope.Machine,
+            TweakScope.CurrentUser,
             EvidenceQuality.Moderate,
             false,
             false,
             false,
-            [MicrosoftProcessorPolicy]);
+            [MicrosoftPowerMode]);
 
         var plan = new MutationPlan(
             "POWER-OVERLAY-001.overlay",
             MutationKind.PowerOverlayScheme,
-            "overlay",
-            "EffectiveOverlayScheme",
+            "user-ac-power-mode",
+            "ConfiguredACPowerMode",
             BestPerformanceOverlay,
             "Guid",
             "Set the Windows power mode overlay to Best performance");
@@ -495,7 +434,7 @@ public static class ExpertTweakCatalog
             return new ExpertTweakCard(
                 definition,
                 new TweakReading(TweakState.Unknown, "Overlay not exposed", "Best performance",
-                    "This Windows build did not return an effective power mode overlay."),
+                    "This Windows build did not return the user-configured AC power mode."),
                 [],
                 null);
         }
@@ -590,10 +529,9 @@ public static class ExpertTweakCatalog
             "TIMING-JITTER-001",
             "Timing",
             "Thread wake-up punctuality",
-            "Measures how late a thread actually wakes after requesting a short sleep, which is the symptom a "
-            + "driver holding the CPU in a deferred procedure call produces.",
-            "This is the unprivileged stand-in for a kernel latency trace. It cannot name the offending driver, "
-            + "but a high P99 here is evidence that stutter originates below the game rather than inside it.",
+            "Measures how late a managed thread wakes after requesting a short sleep.",
+            "The result is sensitive to timer state, the managed runtime, power state and background activity. "
+            + "It can flag a noisy session for follow-up, but cannot attribute delay to DPC/ISR work or CS2.",
             "Diagnostic only. No system change is offered from this measurement.",
             TweakRisk.Low,
             TweakScope.Machine,
@@ -607,29 +545,23 @@ public static class ExpertTweakCatalog
         {
             return new ExpertTweakCard(
                 definition,
-                new TweakReading(TweakState.Unknown, "Not measured", "P99 under 1 ms overshoot",
+                new TweakReading(TweakState.Unknown, "Not measured", "Compare repeated controlled runs",
                     "Run the expert scan to sample scheduler punctuality."),
                 [],
                 null);
         }
 
         var latency = context.Latency;
-        // A P99 overshoot beyond a millisecond means one wake-up in a hundred lands after the next
-        // frame boundary at high refresh, which is where felt stutter starts.
-        var poor = latency.SchedulerJitterP99Ms > 1.0;
         return new ExpertTweakCard(
             definition,
             new TweakReading(
-                poor ? TweakState.Suboptimal : TweakState.Optimal,
+                TweakState.Unknown,
                 $"median {latency.SchedulerJitterMedianMs:0.###} ms, P99 {latency.SchedulerJitterP99Ms:0.###} ms, "
                 + $"worst {latency.SchedulerJitterWorstMs:0.###} ms",
-                "P99 under 1 ms overshoot",
-                poor
-                    ? "Wake-ups are landing late enough to miss frame boundaries at high refresh. Investigate "
-                      + "driver-level contention rather than game settings."
-                    : "Thread wake-ups are punctual on this machine."),
+                "Compare repeated controlled runs; use WPR/ETW for attribution",
+                "This single probe is descriptive only and cannot classify the system as good or bad."),
             [],
-            poor ? "Identifying the responsible driver requires a kernel trace, which this build does not run." : null);
+            "DPC/ISR or driver attribution requires a qualified WPR/ETW trace.");
     }
 
     private static ExpertTweakCard MmcssResponsiveness(ITweakStateReader reader)
@@ -783,8 +715,8 @@ public static class ExpertTweakCatalog
             "Hardware scheduling moves queue management from the operating system onto the GPU's own scheduler, "
             + "shortening the submission path.",
             "It is a prerequisite for some vendor low-latency paths and can reduce submission overhead. It can "
-            + "equally do nothing or regress a specific driver and card, which is why the state is read from the "
-            + "documented capability query rather than assumed.",
+            + "equally do nothing or regress a specific driver and card, so this build sends the user to the "
+            + "supported Windows Settings surface rather than inferring effective state.",
             "Requires a restart. Can help, do nothing, or regress depending on hardware and driver revision.",
             TweakRisk.High,
             TweakScope.Machine,
@@ -792,7 +724,7 @@ public static class ExpertTweakCatalog
             true,
             true,
             false,
-            [MicrosoftHags, MicrosoftWddmCaps]);
+            [MicrosoftHags]);
 
         var gpu = context.Gpus.FirstOrDefault(device => device.HardwareSchedulingSupported.HasValue);
         if (gpu?.HardwareSchedulingSupported is not true)
@@ -803,7 +735,7 @@ public static class ExpertTweakCatalog
                     gpu is null ? TweakState.Unknown : TweakState.NotApplicable,
                     gpu is null ? "Capability query returned nothing" : "Not supported by this adapter or driver",
                     "Enabled",
-                    "The WDDM capability query is the authority here; no registry value is inferred."),
+                    "This build does not infer effective HAGS state from a registry value or reserved driver structure."),
                 [],
                 null);
         }
@@ -1254,15 +1186,13 @@ public static class ExpertTweakCatalog
             "INPUT-POLL-001",
             "Input",
             "Mouse report delivery integrity",
-            "Measures the interval between mouse reports as this PC delivers them, including USB scheduling and "
-            + "driver batching.",
-            "A device set to a high report rate that does not sustain it, or that delivers it with heavy interval "
-            + "scatter, produces inconsistent aim while every frame-time metric stays clean. Frame capture cannot "
-            + "see this because it happens before the engine samples input.",
+            "Samples arrival intervals from the app's raw-input message pump.",
+            "The observation can reveal obvious batching, but it mixes devices and includes message-pump delay. "
+            + "It does not read the mouse's configured/advertised polling rate and cannot grade 2-8 kHz delivery.",
             "Diagnostic only. Report-rate problems are resolved at the device, its port, or its driver.",
             TweakRisk.Low,
             TweakScope.CurrentUser,
-            EvidenceQuality.Moderate,
+            EvidenceQuality.Weak,
             false,
             false,
             false,
@@ -1279,18 +1209,15 @@ public static class ExpertTweakCatalog
                 null);
         }
 
-        var degraded = input.IsRateDegraded || input.IsJitterHigh;
         return new ExpertTweakCard(
             definition,
             new TweakReading(
-                degraded ? TweakState.Suboptimal : TweakState.Optimal,
+                TweakState.Unknown,
                 input.Observation,
-                $"Sustained {input.NominalHz:0} Hz with low interval scatter",
-                degraded
-                    ? BuildPollingDiagnosis(input)
-                    : "Report delivery is sustained and evenly spaced."),
+                "Per-device, event-driven measurement with configured-rate provenance",
+                "Descriptive sample only. Do not infer missing USB reports or device capability from this run."),
             [],
-            degraded ? "Resolve this at the device, port or driver; no Windows setting corrects it." : null);
+            "Decision-grade polling recommendations require per-device raw-input attribution and an event-driven collector.");
     }
 
     private static string BuildPollingDiagnosis(InputChainReport input)
@@ -1406,6 +1333,7 @@ public static class ExpertTweakCatalog
 
     private static ExpertTweakCard MemoryIntegrity(ITweakStateReader reader)
     {
+        _ = reader;
         var definition = new ExpertTweakDefinition(
             "SECURITY-HVCI-001",
             "Security trade-off",
@@ -1425,29 +1353,16 @@ public static class ExpertTweakCatalog
             false,
             [MicrosoftMemoryIntegrity]);
 
-        var plan = new MutationPlan(
-            "SECURITY-HVCI-001.value",
-            MutationKind.RegistryValue,
-            HvciPath,
-            "Enabled",
-            "0",
-            "DWord",
-            "Disable memory integrity at the next restart");
-
-        var current = reader.Read(plan, out var exists);
-        var active = !exists || current != "0";
         return new ExpertTweakCard(
             definition,
             new TweakReading(
-                active ? TweakState.Suboptimal : TweakState.Optimal,
-                active ? "Enabled" : "Disabled",
-                "Your decision, not a recommendation",
-                active
-                    ? "Memory integrity is active and costing frame rate in CPU-bound scenes. FramePath Lab does "
-                      + "not recommend disabling it; it surfaces the trade-off and will reverse the change on request."
-                    : "Memory integrity is currently off. Re-enabling it restores kernel driver verification."),
-            active ? [plan] : [],
-            null);
+                TweakState.Unknown,
+                "Not queried by this build",
+                "Keep Windows security protections enabled",
+                "A policy registry value does not prove the effective runtime state. FramePath Lab does not "
+                + "offer a security-for-performance trade."),
+            [],
+            "Excluded: disabling Memory Integrity is outside the product safety boundary.");
     }
 
     // ---- Memory and platform ---------------------------------------------------------------
@@ -1457,17 +1372,16 @@ public static class ExpertTweakCatalog
         var definition = new ExpertTweakDefinition(
             "MEMORY-PROFILE-001",
             "Memory",
-            "Rated memory profile",
-            "Memory modules boot at a conservative JEDEC speed until the rated profile stored on the module is "
-            + "explicitly enabled in firmware.",
-            "A cache-and-latency-bound engine responds to memory speed more strongly than to almost anything else "
-            + "on this list. A kit sitting at its fallback speed instead of its rated profile gives up a large "
-            + "share of its 1% lows, and no Windows setting can recover it.",
-            "Enabling the rated profile is a firmware change made by the user. It is a factory overclock, so it "
-            + "must be validated for stability rather than assumed.",
+            "SMBIOS memory-speed consistency",
+            "Firmware exposes a configured speed and a maximum-capable speed through SMBIOS. Their relationship "
+            + "can flag a configuration worth checking, but does not prove an XMP/EXPO profile exists.",
+            "A large mismatch can justify checking firmware and the module specification. The performance effect "
+            + "and stable limit are CPU, board, firmware and kit dependent.",
+            "Any memory profile above the processor's official specification is an overclock and needs memory, "
+            + "CPU and WHEA stability validation.",
             TweakRisk.Low,
             TweakScope.Firmware,
-            EvidenceQuality.Strong,
+            EvidenceQuality.Weak,
             false,
             false,
             false,
@@ -1493,10 +1407,8 @@ public static class ExpertTweakCatalog
                 $"{memory.RatedSpeedMts} MT/s",
                 below
                     ? $"The modules advertise {memory.RatedSpeedMts} MT/s but are running at "
-                      + $"{memory.ConfiguredSpeedMts} MT/s. Enable the rated profile (XMP, DOCP or EXPO) in "
-                      + "firmware. On an infinity-fabric platform also confirm the fabric clock stays "
-                      + "synchronous with the memory clock, because a fallback to a divided ratio costs more "
-                      + "latency than the speed increase recovers."
+                      + $"{memory.ConfiguredSpeedMts} MT/s. Check the module and motherboard specifications; "
+                      + "SMBIOS alone cannot identify the correct profile or prove it is stable."
                     : "The modules are running at the speed they advertise. Note that some firmware reports "
                       + "both fields identically once a profile is applied, so treat a match as consistent "
                       + "rather than as proof."),
@@ -1525,12 +1437,12 @@ public static class ExpertTweakCatalog
             []);
 
         var memory = context.Memory;
-        if (!memory.Available)
+        if (!memory.Available || memory.PopulatedChannels == 0)
         {
             return new ExpertTweakCard(
                 definition,
                 new TweakReading(TweakState.Unknown, memory.Describe(), "All channels populated",
-                    "Firmware memory tables were not available."),
+                    "Firmware did not expose a channel layout that this build can identify reliably."),
                 [],
                 null);
         }
@@ -1596,7 +1508,7 @@ public static class ExpertTweakCatalog
                 "Tune in firmware, not in Windows",
                 "Stacked cache detected. Because every core shares one cache domain here, thread placement has "
                 + "nothing to choose between and this catalogue offers no affinity change. The levers that do "
-                + "matter are the undervolt curve and memory speed in firmware. Treat the processor performance "
+                + "may be firmware power/voltage policy and memory stability. Treat the processor performance "
                 + "floor below as an A/B rather than a default, because a raised floor competes with boost "
                 + "headroom on a power- and thermally-limited part."),
             [],
@@ -1624,30 +1536,17 @@ public static class ExpertTweakCatalog
             false,
             []);
 
-        var gpu = context.Gpus.FirstOrDefault(device => device.ResizableBarActive.HasValue);
-        if (gpu is null)
-        {
-            return new ExpertTweakCard(
-                definition,
-                new TweakReading(TweakState.Unknown, "Aperture size not reported", "Full-size aperture",
-                    "No telemetry source reported the BAR1 aperture for this adapter."),
-                [],
-                null);
-        }
-
-        var active = gpu.ResizableBarActive == true;
+        var gpu = context.Gpus.FirstOrDefault(device => device.Vendor == "NVIDIA");
         return new ExpertTweakCard(
             definition,
             new TweakReading(
-                active ? TweakState.Optimal : TweakState.Suboptimal,
-                active ? "Full-size aperture in use" : "Small legacy aperture in use",
-                "Full-size aperture",
-                active
-                    ? "The host can address the full framebuffer."
-                    : "The card is using the small legacy aperture. Enable resizable BAR and above-4G decoding "
-                      + "in firmware, then re-scan."),
+                TweakState.Unknown,
+                gpu?.Observation ?? "No supported telemetry",
+                "Verify platform capability and the vendor's current per-game profile",
+                "BAR1 aperture size does not prove that Resizable BAR is enabled for CS2. NVIDIA enables it "
+                + "selectively through tested game profiles because some titles regress."),
             [],
-            active ? null : "Resizable BAR is enabled in firmware and is never written by this application.");
+            "No firmware or hidden driver-profile change is offered.");
     }
 
     private static ExpertTweakCard GpuInterruptMode(ExpertScanContext context, ITweakStateReader reader)
@@ -1740,17 +1639,20 @@ public static class ExpertTweakCatalog
         return new ExpertTweakCard(
             definition,
             new TweakReading(
-                forced ? TweakState.Suboptimal : TweakState.Optimal,
+                forced.HasValue
+                    ? forced.Value ? TweakState.Suboptimal : TweakState.Optimal
+                    : TweakState.Unknown,
                 $"Performance counter frequency {context.PerformanceCounterFrequency:N0} Hz",
-                "Invariant timestamp counter (10,000,000 Hz)",
-                forced
+                "Inspect boot configuration explicitly if timer forcing is suspected",
+                forced == true
                     ? "The counter is running at the legacy platform-timer frequency, which means the platform "
                       + "clock has been forced on in boot configuration. Clear it from an elevated prompt with "
                       + "\"bcdedit /deletevalue useplatformclock\" and restart, then re-scan."
-                    : "The performance counter is using the normal invariant timestamp path; no forced platform "
-                      + "clock is in effect."),
+                    : forced == false
+                        ? "An authoritative boot-state query found no forced platform clock."
+                        : "QPC frequency alone cannot prove whether useplatformclock was forced; no timer change is recommended."),
             [],
-            forced ? "Boot configuration is never written by this application." : null);
+            forced == true ? "Boot configuration is never written by this application." : null);
     }
 
     private static ExpertTweakCard SteamTransfer(ExpertScanContext context)

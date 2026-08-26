@@ -22,11 +22,23 @@ public interface ITweakStateReader
 public interface IMutationExecutor : ITweakStateReader
 {
     /// <summary>
+    /// Captures a serializable before-state without writing. Failure to distinguish an absent value
+    /// from an unreadable value must throw so the caller fails closed.
+    /// </summary>
+    MutationRecord Capture(MutationPlan plan);
+
+    /// <summary>
     /// Captures the before-state, writes the desired value, then reads back what the system
     /// actually holds. Throws only when the before-state could not be captured, because applying
     /// without a recorded prior value would create an unrevertible change.
     /// </summary>
     MutationRecord Apply(MutationPlan plan);
+
+    /// <summary>
+    /// Applies from an already journalled capture. The executor must compare the live value with
+    /// the capture immediately before writing and refuse if it drifted after user approval.
+    /// </summary>
+    MutationRecord Apply(MutationPlan plan, MutationRecord captured);
 
     /// <summary>
     /// Restores the captured before-state. Compare-before-write: when the live value no longer

@@ -80,6 +80,13 @@ public static class SmbiosMemoryScanner
             return null;
         }
 
+        if (rawSize == 0xFFFF)
+        {
+            // SMBIOS reserves 0xFFFF for an unknown size. Treating the low 15 bits as KiB creates
+            // a fictitious ~31 MiB DIMM and corrupts the total.
+            return null;
+        }
+
         long sizeMegabytes;
         if (rawSize == 0x7FFF && length >= 0x20)
         {
@@ -117,8 +124,9 @@ public static class SmbiosMemoryScanner
         var configuredSpeed = configured.Length > 0 ? configured.Min(module => module.ConfiguredSpeedMts) : 0;
         var ratedSpeed = rated.Length > 0 ? rated.Max(module => module.RatedSpeedMts) : 0;
 
-        // Channel population is inferred from the distinct channel letter in each slot's locator,
-        // which is how every mainstream desktop firmware names its slots (DIMMA1, DIMMB2, ...).
+        // Locator strings are firmware conventions rather than an authoritative channel-state API.
+        // If the convention cannot be parsed, keep channel count unknown instead of equating module
+        // count with channel count.
         var channels = modules
             .Select(module => ExtractChannel(module.DeviceLocator))
             .Where(channel => channel is not null)
@@ -131,7 +139,7 @@ public static class SmbiosMemoryScanner
             modules.Sum(module => module.SizeMegabytes),
             configuredSpeed,
             ratedSpeed,
-            channels > 0 ? channels : modules.Count,
+            channels,
             string.Empty);
     }
 

@@ -28,7 +28,7 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
         switch (plan.Kind)
         {
             case MutationKind.RegistryValue:
-                return ReadRegistry(plan, out exists);
+                return ReadRegistryForScan(plan, out exists);
             case MutationKind.SystemParameter:
                 exists = true;
                 return ReadSystemParameter(plan);
@@ -37,11 +37,10 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
             case MutationKind.PowerOverlayScheme:
                 return ReadOverlayScheme(out exists);
             case MutationKind.ProcessAffinity:
-                return ReadProcessAffinity(plan, out exists);
             case MutationKind.ProcessPriority:
-                return ReadProcessPriority(plan, out exists);
             case MutationKind.ProcessPowerThrottling:
-                return ReadProcessPowerThrottling(plan, out exists);
+                exists = false;
+                return null;
             case MutationKind.BootConfigurationValue:
             default:
                 exists = false;
@@ -51,6 +50,11 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
 
     public MutationRecord Apply(MutationPlan plan)
     {
+        return Apply(plan, Capture(plan));
+    }
+
+    public MutationRecord Capture(MutationPlan plan)
+    {
         ArgumentNullException.ThrowIfNull(plan);
         if (plan.Kind == MutationKind.BootConfigurationValue)
         {
@@ -58,28 +62,60 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
                 "Boot configuration values are reported for review only and are never written by FramePath Lab.");
         }
 
-        var before = Read(plan, out var existedBefore);
-
-        Write(plan, plan.DesiredValue);
-
-        var after = Read(plan, out _);
-        var verified = ValuesMatch(plan, after, plan.DesiredValue);
+        // Power sub-values belong to a specific scheme. Bind the capture to that exact GUID so a
+        // later plan change cannot make revert write the old value into a different active plan.
+        var boundPlan = plan.Kind == MutationKind.PowerSchemeValue
+            ? plan with { Target = $"{ResolveActiveScheme():D}|{plan.Target}" }
+            : plan;
+        bool existedBefore;
+        var before = boundPlan.Kind == MutationKind.RegistryValue
+            ? ReadRegistry(boundPlan, out existedBefore)
+            : Read(boundPlan, out existedBefore);
 
         return new MutationRecord(
-            plan.MutationId,
-            plan.Kind,
-            plan.Target,
-            plan.ValueName,
-            plan.ValueType,
-            plan.Description,
+            boundPlan.MutationId,
+            boundPlan.Kind,
+            boundPlan.Target,
+            boundPlan.ValueName,
+            boundPlan.ValueType,
+            boundPlan.Description,
             existedBefore,
             before,
-            plan.DesiredValue,
-            after,
-            verified,
-            verified
-                ? $"Applied and verified: {Describe(before, existedBefore)} to {after}."
-                : $"Write did not verify. Requested {plan.DesiredValue}, system reports {after ?? "no value"}.");
+            boundPlan.DesiredValue,
+            null,
+            false,
+            "Captured; not yet applied.",
+            AttemptedWrite: false);
+    }
+
+    public MutationRecord Apply(MutationPlan plan, MutationRecord captured)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(captured);
+        ValidateCapture(plan, captured);
+        var boundPlan = ToPlan(captured);
+        var liveBefore = Read(boundPlan, out var liveExists);
+        if (liveExists != captured.ExistedBefore
+            || (liveExists && !ValuesMatch(boundPlan, liveBefore, captured.BeforeValue)))
+        {
+            throw new InvalidOperationException(
+                $"{plan.Description} changed after approval; no write was made.");
+        }
+
+        Write(boundPlan, boundPlan.DesiredValue, requireActivePowerScheme: true);
+
+        var after = Read(boundPlan, out _);
+        var verified = ValuesMatch(boundPlan, after, boundPlan.DesiredValue);
+
+        return captured with
+        {
+            ObservedAfterValue = after,
+            VerifiedAfterWrite = verified,
+            Observation = verified
+                ? $"Applied and verified: {Describe(captured.BeforeValue, captured.ExistedBefore)} to {after}."
+                : $"Write did not verify. Requested {boundPlan.DesiredValue}, system reports {after ?? "no value"}.",
+            AttemptedWrite = true
+        };
     }
 
     public MutationRecord Revert(MutationRecord record)
@@ -99,6 +135,16 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
                 Observation =
                     $"Left unchanged: the value is now {live ?? "absent"}, which this transaction did not write. "
                     + "A later external change was preserved."
+            };
+        }
+
+        if (!record.ExistedBefore && !liveExists)
+        {
+            return record with
+            {
+                ObservedAfterValue = null,
+                VerifiedAfterWrite = true,
+                Observation = "Already at the captured absent state; no restore write was needed."
             };
         }
 
@@ -150,7 +196,7 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
         };
     }
 
-    private void Write(MutationPlan plan, string value)
+    private void Write(MutationPlan plan, string value, bool requireActivePowerScheme = false)
     {
         switch (plan.Kind)
         {
@@ -161,20 +207,16 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
                 WriteSystemParameter(plan, value);
                 break;
             case MutationKind.PowerSchemeValue:
-                WritePowerSchemeValue(plan, value);
+                WritePowerSchemeValue(plan, value, requireActivePowerScheme);
                 break;
             case MutationKind.PowerOverlayScheme:
                 WriteOverlayScheme(value);
                 break;
             case MutationKind.ProcessAffinity:
-                WriteProcessAffinity(plan, value);
-                break;
             case MutationKind.ProcessPriority:
-                WriteProcessPriority(plan, value);
-                break;
             case MutationKind.ProcessPowerThrottling:
-                WriteProcessPowerThrottling(plan, value);
-                break;
+                throw new NotSupportedException(
+                    "FramePath Lab does not read or mutate another process's scheduling state.");
             default:
                 throw new NotSupportedException($"Mutation kind {plan.Kind} cannot be written.");
         }
@@ -189,6 +231,22 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
             record.DesiredValue,
             record.ValueType,
             record.Description);
+
+    private static void ValidateCapture(MutationPlan plan, MutationRecord captured)
+    {
+        var targetMatches = plan.Kind == MutationKind.PowerSchemeValue
+            ? captured.Target.EndsWith($"|{plan.Target}", StringComparison.OrdinalIgnoreCase)
+            : string.Equals(plan.Target, captured.Target, StringComparison.OrdinalIgnoreCase);
+        if (!string.Equals(plan.MutationId, captured.MutationId, StringComparison.Ordinal)
+            || plan.Kind != captured.Kind
+            || !targetMatches
+            || !string.Equals(plan.ValueName, captured.ValueName, StringComparison.Ordinal)
+            || !string.Equals(plan.ValueType, captured.ValueType, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(plan.DesiredValue, captured.DesiredValue, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The journalled before-state does not match the approved mutation.");
+        }
+    }
 
     private static string Describe(string? value, bool existed)
         => existed ? value ?? "no value" : "absent";
@@ -241,18 +299,23 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
     private static string? ReadRegistry(MutationPlan plan, out bool exists)
     {
         var (hive, path) = SplitRegistryTarget(plan.Target);
+        using var key = hive.OpenSubKey(path, writable: false);
+        var value = key?.GetValue(plan.ValueName);
+        exists = value is not null;
+        return value switch
+        {
+            null => null,
+            int number => number.ToString(CultureInfo.InvariantCulture),
+            long number => number.ToString(CultureInfo.InvariantCulture),
+            _ => value.ToString()
+        };
+    }
+
+    private static string? ReadRegistryForScan(MutationPlan plan, out bool exists)
+    {
         try
         {
-            using var key = hive.OpenSubKey(path, writable: false);
-            var value = key?.GetValue(plan.ValueName);
-            exists = value is not null;
-            return value switch
-            {
-                null => null,
-                int number => number.ToString(CultureInfo.InvariantCulture),
-                long number => number.ToString(CultureInfo.InvariantCulture),
-                _ => value.ToString()
-            };
+            return ReadRegistry(plan, out exists);
         }
         catch (SecurityException)
         {
@@ -357,34 +420,44 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
         }
     }
 
-    private static (Guid Subgroup, Guid Setting) ParsePowerTarget(string target)
+    private static (Guid Scheme, Guid Subgroup, Guid Setting) ParsePowerTarget(string target)
     {
-        var parts = target.Split(':', 2);
+        var bound = target.Split('|', 2);
+        var scheme = bound.Length == 2 && Guid.TryParse(bound[0], out var capturedScheme)
+            ? capturedScheme
+            : ResolveActiveScheme();
+        var settingTarget = bound.Length == 2 ? bound[1] : target;
+        var parts = settingTarget.Split(':', 2);
         if (parts.Length != 2 || !Guid.TryParse(parts[0], out var subgroup) || !Guid.TryParse(parts[1], out var setting))
         {
             // A bare setting GUID defaults to the processor subgroup, which is where every
             // processor-policy tweak in this catalogue lives.
-            return Guid.TryParse(target, out var only)
-                ? (ProcessorSubgroup, only)
+            return Guid.TryParse(settingTarget, out var only)
+                ? (scheme, ProcessorSubgroup, only)
                 : throw new ArgumentException($"Power target '{target}' is not a subgroup:setting pair.", nameof(target));
         }
 
-        return (subgroup, setting);
+        return (scheme, subgroup, setting);
     }
 
     private static string? ReadPowerSchemeValue(MutationPlan plan, out bool exists)
     {
-        var (subgroup, setting) = ParsePowerTarget(plan.Target);
-        var scheme = ResolveActiveScheme();
+        var (scheme, subgroup, setting) = ParsePowerTarget(plan.Target);
         var status = ExpertNativeMethods.PowerReadACValueIndex(0, ref scheme, ref subgroup, ref setting, out var value);
         exists = status == 0;
         return exists ? value.ToString(CultureInfo.InvariantCulture) : null;
     }
 
-    private static void WritePowerSchemeValue(MutationPlan plan, string value)
+    private static void WritePowerSchemeValue(MutationPlan plan, string value, bool requireActiveScheme)
     {
-        var (subgroup, setting) = ParsePowerTarget(plan.Target);
-        var scheme = ResolveActiveScheme();
+        var (scheme, subgroup, setting) = ParsePowerTarget(plan.Target);
+        var activeScheme = ResolveActiveScheme();
+        if (requireActiveScheme && activeScheme != scheme)
+        {
+            throw new InvalidOperationException(
+                "The active power scheme changed after approval; no processor-policy write was made.");
+        }
+
         var status = ExpertNativeMethods.PowerWriteACValueIndex(
             0, ref scheme, ref subgroup, ref setting, uint.Parse(value, CultureInfo.InvariantCulture));
         if (status != 0)
@@ -392,15 +465,23 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
             throw new InvalidOperationException($"Power setting write failed with status {status}.");
         }
 
-        // Windows only materialises a written scheme value when the scheme is re-activated.
-        ExpertNativeMethods.PowerSetActiveScheme(0, ref scheme);
+        // Materialise the value only when this is still the active scheme. During rollback an
+        // externally selected third scheme is preserved rather than being silently replaced.
+        if (activeScheme == scheme)
+        {
+            var activateStatus = ExpertNativeMethods.PowerSetActiveScheme(0, ref scheme);
+            if (activateStatus != 0)
+            {
+                throw new InvalidOperationException($"Power scheme activation failed with status {activateStatus}.");
+            }
+        }
     }
 
     private static string? ReadOverlayScheme(out bool exists)
     {
         try
         {
-            var status = ExpertNativeMethods.PowerGetEffectiveOverlayScheme(out var overlay);
+            var status = ExpertNativeMethods.PowerGetUserConfiguredACPowerMode(out var overlay);
             exists = status == 0;
             return exists ? overlay.ToString("D") : null;
         }
@@ -413,7 +494,8 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
 
     private static void WriteOverlayScheme(string value)
     {
-        var status = ExpertNativeMethods.PowerSetActiveOverlayScheme(Guid.Parse(value));
+        var mode = Guid.Parse(value);
+        var status = ExpertNativeMethods.PowerSetUserConfiguredACPowerMode(ref mode);
         if (status != 0)
         {
             throw new InvalidOperationException($"Power mode overlay write failed with status {status}.");

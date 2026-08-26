@@ -45,6 +45,28 @@ public enum TweakState
     Blocked
 }
 
+/// <summary>
+/// Product decision for a candidate tweak. Evidence and risk determine whether FramePath Lab may
+/// write it; detecting a non-default value is never, by itself, permission to call it suboptimal.
+/// </summary>
+public enum TweakDisposition
+{
+    /// <summary>Strong evidence, bounded downside and a supported reversible write.</summary>
+    RecommendDefault,
+
+    /// <summary>Workload-dependent; only offer inside a controlled before/after experiment.</summary>
+    OptInExperiment,
+
+    /// <summary>Use the vendor or Windows supported UI and rescan; FramePath Lab does not write it.</summary>
+    GuidedAction,
+
+    /// <summary>Useful context for diagnosis, but not a performance recommendation.</summary>
+    DiagnosticOnly,
+
+    /// <summary>Unsafe, unsupported, disproven or outside the product's integrity boundary.</summary>
+    Excluded
+}
+
 /// <summary>The kinds of atomic mutation the executor knows how to capture, apply and revert.</summary>
 public enum MutationKind
 {
@@ -113,7 +135,13 @@ public sealed record ExpertTweakDefinition(
     bool RequiresElevation,
     bool RequiresReboot,
     bool RequiresGameRestart,
-    IReadOnlyList<EvidenceSource> Sources);
+    IReadOnlyList<EvidenceSource> Sources)
+{
+    public TweakDisposition Disposition { get; init; } = TweakDisposition.OptInExperiment;
+
+    public string DispositionReason { get; init; } =
+        "This candidate is workload-dependent and requires a controlled before/after benchmark.";
+}
 
 /// <summary>Definition plus this machine's reading plus the exact writes that would be made.</summary>
 public sealed record ExpertTweakCard(
@@ -164,7 +192,7 @@ public sealed record ExpertScanContext(
     string GameExecutableName,
     MemoryConfiguration Memory,
     SteamActivity Steam,
-    bool ForcedPlatformClock,
+    bool? ForcedPlatformClock,
     long PerformanceCounterFrequency,
     bool? GpuMessageSignalledInterrupts,
     string? GpuInterruptRegistryPath,

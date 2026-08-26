@@ -7,10 +7,8 @@ using Microsoft.Win32;
 namespace FramePathLab.Windows.Scanning;
 
 /// <summary>
-/// Measures how punctually this machine can actually wake a thread, plus the timer resolution that
-/// governs it. This is the unprivileged stand-in for a DPC/ISR trace: it cannot name the offending
-/// driver, but it does measure the symptom a player feels as inconsistent frame delivery, and it
-/// needs no kernel session and no elevation.
+/// Measures the timing of a managed Thread.Sleep probe plus the queried timer period. It is a
+/// coarse environmental observation, not a DPC/ISR measurement and not a substitute for ETW/WPR.
 /// </summary>
 public static class SystemLatencyProbe
 {
@@ -75,6 +73,14 @@ public static class SystemLatencyProbe
         try
         {
             Thread.CurrentThread.Priority = ThreadPriority.AboveNormal;
+        }
+        catch (ThreadStateException)
+        {
+            // Priority adjustment is advisory; continue at the default priority.
+        }
+
+        try
+        {
             for (var index = 0; index < sampleCount; index++)
             {
                 if (cancellationToken.IsCancellationRequested)
@@ -88,10 +94,6 @@ public static class SystemLatencyProbe
                 var overshoot = elapsed - expected;
                 samples.Add(overshoot > 0 ? overshoot : 0);
             }
-        }
-        catch (ThreadStateException)
-        {
-            // Priority adjustment is advisory; the measurement remains valid at the default priority.
         }
         finally
         {
@@ -121,9 +123,8 @@ public static class SystemLatencyProbe
     }
 
     /// <summary>
-    /// Windows 11 22H2 made timer-resolution requests process-scoped. When this policy value is
-    /// present and set, the pre-22H2 global behaviour is restored, which is what a game asking for
-    /// a 0.5 ms tick actually needs in order to receive one.
+    /// Reports only whether an undocumented legacy policy value is present. Its presence is not a
+    /// recommendation and does not prove a game benefits from it.
     /// </summary>
     public static bool ReadGlobalTimerRequests()
     {

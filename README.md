@@ -25,30 +25,30 @@ Implemented:
 
 ## Expert tier
 
-A second, deeper layer for systems that already have the obvious settings right. It reads state nothing in the base scan could see, and it applies changes with a full rollback ledger.
+A second, deeper layer for systems that already have the obvious settings right. It keeps detection separate from product policy: each item is labelled **default recommendation**, **A/B experiment**, **guided action**, **diagnostic only**, or **excluded**. Only supported, bounded power-policy candidates can retain an Apply plan.
 
 What it measures that the base scan cannot:
 
 - **CPU scheduling topology** — physical/logical cores, SMT, efficiency classes, and last-level-cache groups. Detects an asymmetric-cache die (the vertical-cache CCD) and a hybrid performance-core set, then names the affinity mask a latency-sensitive game belongs on. Cores outside any L3 domain — the low-power island on recent hybrid parts — are grouped separately instead of being dropped.
 - **Exact display timing** via `QueryDisplayConfig` — the true rational refresh rate, not a truncated integer, so 59.94-class timings need no guessing. The frame cap is computed from it.
-- **GPU telemetry** through the driver's own NVML — active clock limiter, PCIe link width and generation against maximum, performance state. Loaded by name at runtime; no bundled binary, and absence degrades to "unavailable".
-- **Hardware-accelerated GPU scheduling** read from the documented `D3DKMT_WDDM_2_7_CAPS` capability query rather than inferred from a registry value.
-- **Mouse report delivery** — measured sustained report rate, interval scatter, and missed reports, timed from raw input. Catches a device set to a high rate that does not sustain it, which frame capture cannot see because it happens before the engine samples input.
-- **Thread wake-up punctuality** — lateness measured against the timer tick, which isolates scheduling delay from timer granularity. The unprivileged stand-in for a kernel latency trace.
+- **GPU telemetry** through the driver's own NVML — active clock limiter, PCIe link width and generation against maximum, performance state. Loaded only from the protected Windows system directory; no bundled binary, and absence degrades to "unavailable".
+- **Hardware-accelerated GPU scheduling** remains a guided Windows Settings check. The reserved `D3DKMT_WDDM_2_7_CAPS` structure and a registry request are not treated as a supported effective-state API.
+- **Mouse message-arrival sampling** — a descriptive raw-input message-pump observation. It is not presented as the device's configured polling rate, a missed-report count, or a decision-grade 2-8 kHz measurement.
+- **Thread wake-up sampling** — a coarse managed `Thread.Sleep` observation. It is not labelled DPC/ISR latency; attribution requires WPR/ETW.
 - **Presentation path from the capture itself** — independent flip versus composed, vertical sync read from the sync interval rather than from game configuration, CPU- versus GPU-bound classification, frame-pacing cadence, and dropped presents.
-- **Memory configuration** parsed straight from the SMBIOS firmware tables via `GetSystemFirmwareTable` — per-slot size, part number, rated speed against configured speed, and channel population. Catches a kit sitting at its JEDEC fallback instead of its rated profile, and modules populating only one channel. Both are worth more than the rest of the catalogue combined on a latency-bound CPU, and neither is visible from any Windows setting.
+- **Memory configuration** parsed from SMBIOS — per-slot size and firmware-reported configured/maximum speed, with channel layout only when locator strings can be parsed. This is a consistency check, not proof of XMP/EXPO state or stability.
 - **Stacked-cache CPU profile** — a part carrying vertically stacked cache is power- and thermally-limited by design, so the catalogue changes its own advice there: it offers no affinity change (one cache domain leaves nothing to choose between) and demotes the processor performance floor from a recommendation to an explicit A/B, because a raised floor competes with the boost headroom the active cores need.
-- **Resizable BAR** inferred from the BAR1 aperture size, which distinguishes a full-framebuffer aperture from the small legacy one.
-- **Forced platform timer** detected from the performance-counter frequency — the signature of `useplatformclock` having been forced on and never reversed, which is one of the more reliable wins available on an already-tuned system.
+- **Resizable BAR / BAR1 context** without claiming that aperture size proves the driver's per-game Resizable BAR profile is active.
+- **Performance-counter frequency** retained as provenance without claiming that QPC frequency proves a `useplatformclock` boot setting.
 - **Display adapter interrupt mode**, and **Steam transfer in progress**, which is among the most common causes of stutter in an otherwise clean session and is invisible to any settings audit.
 
-Roughly thirty checks across CPU placement and power policy, timing and scheduling, GPU and presentation, display, input, background services, and network adapter latency settings. Each states the mechanism it acts on, why it helps, its trade-off, and the literal writes it will make — shown before you commit.
+Roughly thirty research candidates span CPU/power policy, timing, GPU/presentation, display, input, background activity, and network context. Unsupported registry writes, security reductions, game-process manipulation, raw NIC/driver changes, MMCSS folklore, and timer myths remain visible as **Excluded** with no Apply plan. The retained power-policy experiments show their literal supported writes before approval.
 
 Headless equivalents:
 
 ```powershell
 .\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert --measure-input
-.\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert-apply INPUT-ACCEL-001
+.\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert-apply POWER-OVERLAY-001
 .\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert-revert all
 ```
 
@@ -62,18 +62,19 @@ Deliberately deferred:
 
 ## Safety boundary
 
-The expert tier writes system state. Every write is explicit, individually approved, and reversible.
+The expert tier fails closed through an evidence policy. Most cards are read-only or guided. A small set of supported power-policy candidates can be offered only as temporary A/B experiments; every retained write is explicit, individually approved, and reversible.
 
 The contract for all of them is identical:
 
 1. The exact prior value is read and recorded in a durable, integrity-checked ledger **before** anything is written. If a before-state cannot be read, nothing is written at all.
-2. The write happens, then the value is read back. A write that does not verify is reported as unverified, never as success.
-3. A tweak with several values applies them as a unit. If one fails, the ones that already landed are rolled back automatically.
-4. Reverting compares before writing. If something else changed the value after FramePath Lab did, that newer state is preserved rather than overwritten.
+2. A durable **write intent** is flushed immediately before each atomic write, and the verified result is flushed immediately after. A crash at either boundary therefore leaves a conservative recovery record.
+3. The write happens from the recorded capture with compare-before-write drift protection. A write that does not verify triggers automatic rollback and is never called success.
+4. A tweak with several values applies them as a unit. If one fails, the values that may have landed are rolled back automatically.
+5. Reverting compares before writing. If something else changed the value after FramePath Lab did, that newer state is preserved rather than overwritten.
 
-The ledger lives in `%LOCALAPPDATA%\FramePathLab` and survives a crash, a reboot, and a reinstall of the app, so anything applied can always be undone — from the Expert tab, or with `expert-revert all` from the CLI.
+The ledger lives in `%LOCALAPPDATA%\FramePathLab` and supports recovery after a crash, reboot, or reinstall. It is a corruption check, not a security boundary against another process running as the same user. The full app must remain unelevated; a future privileged broker must resolve allowlisted action IDs rather than trust journal-supplied targets.
 
-Machine-scope writes need administrator rights. Running unelevated does not attempt them and does not partially apply them; the affected items report themselves as blocked.
+The full desktop/CLI process must not be used as an elevated mutation broker. Automatic expert writes are disabled while it is elevated, and machine-scope expert writes remain blocked until a restricted allowlisted broker exists.
 
 The application still does not:
 
@@ -85,7 +86,7 @@ The application still does not:
 - install a driver, service, overlay or background updater;
 - change firmware, power limits or boot configuration.
 
-Two entries deserve to be called out by name. **CPU thread placement** sets the affinity of the running game process; it is reversible instantly and is lost when the game restarts. **Memory integrity** is the one item in the catalogue that trades a real kernel security guarantee for frame rate — it is detected and surfaced with its cost stated in both directions, and it is never recommended, only offered.
+**CPU affinity/EcoQoS**, **Memory Integrity disable**, **global timer policy**, **MMCSS task edits**, **Win32PrioritySeparation**, **GPU MSI registry edits**, and raw NIC/driver registry changes are explicitly excluded and have no executable plan.
 
 Imported captures are observational. A single capture cannot produce a causal Keep/Revert decision, and software timing fields are not presented as physical mouse-to-photon latency. Every tweak in the catalogue is an experiment with an uncertain benefit on any particular machine, not a guarantee.
 

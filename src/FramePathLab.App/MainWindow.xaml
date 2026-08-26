@@ -309,7 +309,7 @@
                                 <TextBlock TextWrapping="Wrap"
                                            Style="{StaticResource MutedText}"
                                            Margin="0,10,0,0"
-                                           Text="Every change records its exact prior value before writing and verifies the result by reading it back. Anything applied here can be restored from Applied changes below." />
+                                           Text="Deep checks are classified as benchmark-only experiments, guided actions, diagnostics, or exclusions. Only supported bounded experiments can be applied; each records durable write intent and verifies or rolls back." />
                                 <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
                                     <Button Content="{Binding ExpertScanButtonText}"
                                             Command="{Binding ExpertScanCommand}"
@@ -392,6 +392,9 @@
                                                     <TextBlock Text="{Binding Rationale}" TextWrapping="Wrap" Style="{StaticResource MutedText}" Margin="0,2,0,8" />
                                                     <TextBlock Text="TRADE-OFF" Style="{StaticResource EyebrowText}" />
                                                     <TextBlock Text="{Binding Tradeoff}" TextWrapping="Wrap" Style="{StaticResource MutedText}" Margin="0,2,0,8" />
+                                                    <TextBlock Text="PRODUCT DECISION" Style="{StaticResource EyebrowText}" />
+                                                    <TextBlock Text="{Binding DispositionLabel}" FontWeight="SemiBold" Margin="0,2,0,2" />
+                                                    <TextBlock Text="{Binding DispositionReason}" TextWrapping="Wrap" Style="{StaticResource MutedText}" Margin="0,0,0,8" />
                                                     <TextBlock Text="EXACT CHANGES" Style="{StaticResource EyebrowText}" />
                                                     <Border Background="#0C131D" CornerRadius="6" Padding="10,8" Margin="0,4,0,0">
                                                         <TextBlock Text="{Binding PlanText}"

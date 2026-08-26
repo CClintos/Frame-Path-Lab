@@ -1,4 +1,4 @@
-# FramePath Lab 0.3.0 — unsigned developer preview
+# FramePath Lab 0.4.0 — unsigned developer preview
 
 This build replaces the research-first workflow with a pre-game scan that clearly separates settings that are ready, changes that are available, settings that need confirmation, and checks that are unavailable. It retains one real, explicit, bounded Windows system-change experiment with rollback safeguards. It is not a one-click optimiser and does not promise lower latency.
 
@@ -37,6 +37,7 @@ Important limits:
 - Direct capture is deliberately disabled pending collector, licensing, lost-event and observer-effect qualification.
 - Imported results are baseline-only. They do not establish physical mouse-to-photon latency or justify a causal Keep/Revert decision.
 - No registry, driver-profile, monitor, Steam or CS2 settings are automatically changed.
+- The Expert tier separately labels benchmark-only power experiments, guided checks, diagnostics, and excluded hypotheses. Security disabling, game-process affinity/EcoQoS, timer/MMCSS/quantum folklore, GPU MSI, and raw NIC/driver registry writes cannot be applied.
 - No power plans are created, edited, unhidden, or deleted, and the app never elevates itself.
 - No game-process injection, memory access, input automation or packet access is present.
 
