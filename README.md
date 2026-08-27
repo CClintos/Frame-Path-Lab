@@ -6,6 +6,32 @@ The last part is the point. Anyone can hand you a list of registry values. Nobod
 
 ---
 
+## Download
+
+**[⬇ Download FramePath Lab v0.5.0 for Windows x64](https://github.com/CClintos/Frame-Path-Lab/releases/latest/download/FramePathLab-v0.5.0-win-x64-unsigned.zip)** — 60 MB
+
+1. Extract the whole ZIP to a normal folder.
+2. Run `FramePathLab.exe`.
+
+That is the entire setup. **Nothing to install — the .NET runtime is bundled**, so there is no SDK
+step and no runtime prerequisite. Windows 11 x64.
+
+The build is unsigned, so SmartScreen will warn you: choose **More info → Run anyway**, or
+right-click the ZIP → Properties → **Unblock** before extracting. [Checksums are published with the
+release](https://github.com/CClintos/Frame-Path-Lab/releases/latest).
+
+Unelevated works and is the safer way to start — you get every per-user card. Machine-scope cards
+(services, the diagnostics trace session, network adapter properties, device disabling) need
+**Run as administrator**, and say so rather than failing silently. Every privileged write is checked
+against a compiled-in allowlist either way.
+
+There is a headless `FramePathLab.Cli.exe` in the same folder; run it with no arguments for the
+command list.
+
+<sub>Prefer to build it yourself? See [Build and run](#build-and-run) at the bottom.</sub>
+
+---
+
 ## Why this is not another tweak list
 
 A typical optimizer script — and every guide it was copied from — has four structural problems. FramePath Lab exists because of them.

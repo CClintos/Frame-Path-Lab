@@ -7,9 +7,9 @@
     <AssemblyName>FramePathLab</AssemblyName>
     <Product>FramePath Lab</Product>
     <Description>Evidence-led competitive FPS readiness scanner with one bounded reversible Windows experiment</Description>
-    <Version>0.4.0</Version>
-    <AssemblyVersion>0.4.0.0</AssemblyVersion>
-    <FileVersion>0.4.0.0</FileVersion>
+    <Version>0.5.0</Version>
+    <AssemblyVersion>0.5.0.0</AssemblyVersion>
+    <FileVersion>0.5.0.0</FileVersion>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
     <ApplicationManifest>app.manifest</ApplicationManifest>

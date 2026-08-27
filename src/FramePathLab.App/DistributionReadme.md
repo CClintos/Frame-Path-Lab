@@ -1,44 +1,94 @@
-# FramePath Lab 0.4.0 — unsigned developer preview
+# FramePath Lab 0.5.0 — unsigned build
 
-This build replaces the research-first workflow with a pre-game scan that clearly separates settings that are ready, changes that are available, settings that need confirmation, and checks that are unavailable. It retains one real, explicit, bounded Windows system-change experiment with rollback safeguards. It is not a one-click optimiser and does not promise lower latency.
+A Windows tuning tool for competitive FPS. It measures your specific machine, applies changes
+against a verified rollback ledger, and then tells you from a capture whether they actually did
+anything.
+
+Nothing in this folder needs installing. Nothing needs .NET installed either — the runtime is
+included.
 
 ## Start here
 
-1. Extract the entire ZIP to a normal folder.
-2. Run `FramePathLab.exe` on Windows 11 x64. Do not run as administrator.
-3. The app opens on **Pre-game** and performs a read-only scan. If an earlier approved power session was interrupted, startup first performs compare-before-write recovery of that recorded session, then scans and shows the result.
-4. Review the four status counts and cards. Unknown settings are labelled **Check manually**, never guessed as disabled.
-5. Use the action on one card. Supported manual actions open the correct Windows page or show the in-game checklist; return and select **Scan this PC** after changing anything.
-6. If the Windows power-plan card shows **Change available**, select **Start 15-minute test** and approve the exact before/after plans. Keep FramePath Lab open, repeat the same benchmark scenario, then restore the previous plan.
+1. **Extract the whole ZIP** to a normal folder — Desktop or Documents is fine. Do not run it from
+   inside the ZIP; it will not find the files next to it.
+2. **Run `FramePathLab.exe`.**
+3. Windows will warn you that it is from an unknown publisher, because this build is unsigned.
+   Choose **More info → Run anyway**. If you would rather not, right-click the ZIP before
+   extracting, choose Properties, and tick **Unblock**.
+4. The app opens and performs a **read-only scan**. Nothing is written until you press an Apply
+   button on a specific card.
 
-If High performance is already active, missing, AC power is not positively detected, or the app is in Remote Desktop, the Apply button stays unavailable. FramePath Lab never creates or unhides a missing plan.
+## Run it as administrator, or don't — both work
 
-Implemented:
+Unelevated is fine and is the safer way to start. You get every per-user card: capture, Game Mode,
+presentation, pointer, background apps.
 
-- Scan-first dashboard with readable, human status labels and direct actions.
-- Explicit current value, next step, evidence, risks, and verification guidance on every card.
-- Supported links to Advanced display, Game Mode, and default graphics settings.
-- Safe handling of the common 59/60 Hz reporting pair without claiming an optimization opportunity.
-- Local Windows/display/power/Steam/CS2 scan.
-- One 15-minute switch to an already-installed Windows High performance plan.
-- Exact prior-plan snapshot, durable transaction journal, apply/read-back verification, monitored independent rollback guardian, and compare-before-write restoration.
-- Verified restoration attempts on explicit request, normal app exit, AC loss, or lease expiry; external third-plan changes are preserved and conflicts are shown.
-- Next-launch recovery for an interrupted session.
-- Guided Windows settings links and manual NVIDIA/CS2 instructions.
-- Evidence and exclusion cards.
-- Bounded PresentMon-style CSV import and descriptive analysis.
-- Local derived history and collision-safe Markdown report export.
+Machine-scope cards — services, the diagnostics trace session, network adapter properties, device
+disabling, boot-timer state — need an elevated session and will say so rather than failing
+silently. Right-click `FramePathLab.exe` → **Run as administrator** when you want those.
 
-Important limits:
+Every privileged write is still checked against a compiled-in allowlist first. Elevation widens
+what is reachable; it does not widen what is permitted.
 
-- The executable is **not code-signed or installed**. Windows may show an unknown-publisher warning.
-- A full Windows crash or reboot can leave the temporary plan active until you reopen FramePath Lab. This portable build deliberately installs no service, scheduled task, or startup entry.
-- High performance can increase idle power, temperature, fan noise, and energy use. Benefit on a Ryzen 7 5800X3D may be zero; measure before and after.
-- Direct capture is deliberately disabled pending collector, licensing, lost-event and observer-effect qualification.
-- Imported results are baseline-only. They do not establish physical mouse-to-photon latency or justify a causal Keep/Revert decision.
-- No registry, driver-profile, monitor, Steam or CS2 settings are automatically changed.
-- The Expert tier separately labels benchmark-only power experiments, guided checks, diagnostics, and excluded hypotheses. Security disabling, game-process affinity/EcoQoS, timer/MMCSS/quantum folklore, GPU MSI, and raw NIC/driver registry writes cannot be applied.
-- No power plans are created, edited, unhidden, or deleted, and the app never elevates itself.
-- No game-process injection, memory access, input automation or packet access is present.
+## What the cards mean
 
-`samples/presentmon-sample.csv` is synthetic parser test data, not performance evidence.
+Each card is one setting, showing what it is now, what it would become, and the reasoning. They
+fall into five kinds:
+
+- **Applied by default** — documented, per-user, instantly reversible, broad agreement.
+- **Experiment** — a real mechanism whose value depends on your hardware and workload. Apply it,
+  then measure it. Do not assume.
+- **Guided** — change it in the supported Windows or vendor interface. The app points you there
+  rather than writing it.
+- **Diagnostic** — a reading, not a change.
+- **Excluded** — checked and rejected, with the reason recorded.
+
+## Undo
+
+Every change captures its exact prior value into a ledger *before* writing, and reads back to
+confirm afterwards. Any change can be reversed individually, and the ledger survives a crash, a
+reboot, and deleting this folder.
+
+The ledger lives in `%LOCALAPPDATA%\FramePathLab`. Deleting the app does not delete it — that would
+strand applied changes with no way back.
+
+## The command line
+
+`FramePathLab.Cli.exe` in this folder does the same work without a window.
+
+```
+FramePathLab.Cli.exe expert                     read-only scan, as JSON
+FramePathLab.Cli.exe expert --measure-input     adds the mouse report-rate probe
+FramePathLab.Cli.exe expert-apply <tweak-id>    apply one card, journalled
+FramePathLab.Cli.exe expert-history             list every recorded transaction
+FramePathLab.Cli.exe expert-revert <id|all>     undo
+FramePathLab.Cli.exe benchmark --quick          the self-contained frame benchmark
+FramePathLab.Cli.exe abtest <tweak-id> --pairs 5    interleaved paired A/B on one change
+FramePathLab.Cli.exe autotune --balanced --isolate  measure, apply, re-measure, keep what earned it
+```
+
+`expert` prints a lot of JSON. Redirect it: `FramePathLab.Cli.exe expert > scan.json`.
+
+## Before you measure anything
+
+Close what is running. A background process that comes and goes between two benchmark runs shows up
+as a difference the tool will attribute to your change. Browsers are the usual culprit.
+
+If you run a process manager that reassigns priority or affinity — Process Lasso and similar — stop
+it first. It will change the thing being measured while it is being measured.
+
+## Honest limits
+
+- A single before/after pair is a measurement, not proof. Repeat it.
+- Anything under about 2% is inside normal run-to-run variation on most machines and is reported as
+  no measured change rather than as a win.
+- The benchmark is a proxy for a game, not a game. It exercises the presentation path, the
+  scheduler, memory latency and power behaviour faithfully. It does not reproduce a specific
+  engine's shader or draw-call mix, and it never moves the mouse — so input settings are held on
+  their documented behaviour rather than on a frame-rate measurement that cannot see them.
+
+## This build is unsigned
+
+There is no code-signing certificate on it, so SmartScreen will complain and some environments will
+block it outright. Source is at https://github.com/CClintos/Frame-Path-Lab if you would rather build
+it yourself.
