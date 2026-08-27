@@ -24,6 +24,14 @@ public static class NetworkAdapterScanner
         "*EnergyEfficientEthernet"
     ];
 
+    // As with the energy keyword, vendors do not agree on one name for segmentation offload.
+    private static readonly string[] LargeSendOffloadNames =
+    [
+        "*LsoV2IPv4",
+        "*LsoV2IPv6",
+        "LargeSendOffload"
+    ];
+
     public static IReadOnlyList<NetworkAdapterState> Scan()
     {
         var activeIds = ResolveActiveInterfaceIds();
@@ -61,6 +69,14 @@ public static class NetworkAdapterScanner
                 var moderation = ReadInt(adapterKey, "*InterruptModeration");
                 var flowControl = ReadInt(adapterKey, "*FlowControl");
                 var coalescing = ReadInt(adapterKey, "*RscIPv4");
+
+                // Bit 0x18 of PnPCapabilities is what the "allow the computer to turn off this
+                // device to save power" checkbox writes. Named in every documented fix for the
+                // 2.5G Realtek link-drop problem, alongside the energy-efficiency keyword.
+                var powerManagement = ReadInt(adapterKey, "PnPCapabilities");
+                var largeSendOffload = LargeSendOffloadNames
+                    .Select(name => ReadInt(adapterKey, name))
+                    .FirstOrDefault(value => value.HasValue);
                 var energy = EnergyEfficiencyNames
                     .Select(name => ReadInt(adapterKey, name))
                     .FirstOrDefault(value => value.HasValue);
@@ -75,6 +91,8 @@ public static class NetworkAdapterScanner
                     energy,
                     flowControl,
                     coalescing,
+                    powerManagement,
+                    largeSendOffload,
                     BuildObservation(moderation, energy, flowControl, coalescing)));
             }
         }

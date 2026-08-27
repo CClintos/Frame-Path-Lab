@@ -88,6 +88,7 @@ public sealed class ExpertScanCoordinator
         var (_, usbControllers, moderatedUsb, usbObservation) = PlatformStateScanner.ReadUsbInterruptModeration();
         var services = ServiceStateScanner.Scan();
         var devices = DeviceInventoryScanner.Scan(audio, network);
+        var drivers = DriverInventoryScanner.Scan();
 
         // A week covers enough real idle time for a marginal voltage offset to announce itself.
         var hardwareErrors = HardwareErrorScanner.Scan(TimeSpan.FromDays(7));
@@ -136,6 +137,7 @@ public sealed class ExpertScanCoordinator
             reservedObservation,
             services,
             devices,
+            drivers,
             usbControllers,
             moderatedUsb,
             usbObservation);

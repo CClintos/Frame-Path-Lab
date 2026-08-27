@@ -102,7 +102,12 @@ public static class MutationAllowlist
         "*EnergyEfficientEthernet",
         "*FlowControl",
         "*RscIPv4",
-        "*RscIPv6"
+        "*RscIPv6",
+
+        // The "allow the computer to turn off this device to save power" checkbox. A DWord rather
+        // than an NDIS keyword, and permitted for the same reason as the rest: it decides whether
+        // the adapter is allowed to stop being ready.
+        "PnPCapabilities"
     ];
 
     /// <summary>

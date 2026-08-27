@@ -224,6 +224,7 @@ public sealed record ExpertScanContext(
     string ReservedCpuSetObservation,
     ServiceInventory Services,
     DeviceInventory Devices,
+    DriverInventory Drivers,
     int UsbControllers,
     int ModeratedUsbControllers,
     string UsbModerationObservation);

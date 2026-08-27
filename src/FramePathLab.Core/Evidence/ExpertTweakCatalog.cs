@@ -151,6 +151,7 @@ public static class ExpertTweakCatalog
         cards.AddRange(ServiceCards(context));
         cards.AddRange(DeviceCards(context));
         cards.Add(SystemDeviceNote(context));
+        cards.AddRange(DriverCards(context));
         cards.AddRange(DebunkRegister());
 
         cards.AddRange(NetworkTweaks(context, reader));
@@ -3054,6 +3055,181 @@ public static class ExpertTweakCatalog
         }
     }
 
+    // ---- Drivers -----------------------------------------------------------------------------
+
+    /// <summary>
+    /// Which driver is bound to each subsystem where the answer actually differs.
+    ///
+    /// <para>
+    /// "Vendor driver or the one Windows installed" gets argued rather than checked, and the honest
+    /// answer is per subsystem, not universal. Windows records the provider, version, date and
+    /// binding service for every device, so the machine can be asked. These are diagnostic: nothing
+    /// here writes, because installing a driver is an installer's job and a class-key write is not
+    /// a supported way to change one.
+    /// </para>
+    /// </summary>
+    private static IEnumerable<ExpertTweakCard> DriverCards(ExpertScanContext context)
+    {
+        var inventory = context.Drivers;
+        if (!inventory.Available)
+        {
+            yield break;
+        }
+
+        foreach (var group in new[]
+                 {
+                     ("MEDIA", "Audio"),
+                     ("Net", "Network"),
+                     ("Display", "Graphics"),
+                     ("HDC", "Storage controller"),
+                     ("SCSIAdapter", "Storage adapter")
+                 })
+        {
+            var drivers = inventory.InClass(group.Item1).ToArray();
+            if (drivers.Length == 0)
+            {
+                continue;
+            }
+
+            var (state, verdict) = Judge(group.Item1, drivers);
+            var listing = string.Join(Environment.NewLine, drivers.Select(driver => driver.Describe()));
+
+            yield return new ExpertTweakCard(
+                new ExpertTweakDefinition(
+                    $"DRIVER-{group.Item1.ToUpperInvariant()}-001",
+                    "Drivers",
+                    $"{group.Item2} driver in use",
+                    "Windows records the provider, version, date and kernel service bound to every "
+                    + "device, so which driver is installed is a fact about this machine rather than "
+                    + "a matter of opinion.",
+                    verdict,
+                    "Diagnostic only. Changing a driver is an installer's job; this application does "
+                    + "not write driver bindings.",
+                    TweakRisk.Low,
+                    TweakScope.Machine,
+                    EvidenceQuality.Moderate,
+                    false,
+                    false,
+                    false,
+                    []),
+                new TweakReading(
+                    state,
+                    drivers.Length == 1 ? drivers[0].Describe() : $"{drivers.Length} devices",
+                    "See the reasoning",
+                    listing),
+                [],
+                null);
+        }
+    }
+
+    /// <summary>
+    /// The reasoning per subsystem. Microsoft-provided is not a synonym for worse — it is the right
+    /// answer for storage and the wrong one for an onboard codec — so the verdict is specific to
+    /// what each class's generic driver can and cannot do.
+    /// </summary>
+    private static (TweakState State, string Verdict) Judge(string deviceClass, InstalledDriver[] drivers)
+    {
+        switch (deviceClass.ToUpperInvariant())
+        {
+            case "MEDIA":
+            {
+                var inbox = drivers.Where(driver => driver.IsInboxDriver).ToArray();
+                if (inbox.Length == drivers.Length)
+                {
+                    return (TweakState.Suboptimal,
+                        "Every audio device here is on the generic High Definition Audio class driver. "
+                        + "That driver cannot do jack detection, front-panel retasking or channel "
+                        + "configuration, and on several codecs it will not offer the full set of "
+                        + "sample rates. For an onboard codec the vendor driver is the better choice. "
+                        + "The caveat is what usually ships beside it: board vendors bundle an audio "
+                        + "effects stack, and a processing object inserted into the render path is a "
+                        + "real and repeatedly measured source of added output latency. Install the "
+                        + "driver, decline the effects suite, and check the audio effects card. If "
+                        + "sound leaves this machine over USB or a headset receiver, none of this "
+                        + "matters and the onboard codec is a candidate for the device list instead.");
+                }
+
+                return (TweakState.Optimal,
+                    "A vendor audio driver is bound, which is the right answer for an onboard codec. "
+                    + "The thing worth checking now is not the driver but what was installed with it: "
+                    + "an effects or enhancement stack sitting in the render path adds output latency "
+                    + "that the driver itself does not. See the audio effects card.");
+            }
+
+            case "NET":
+            {
+                var inbox = drivers.Where(driver => driver.IsInboxDriver).ToArray();
+                var verdict = inbox.Length > 0
+                    ? "At least one adapter is on the driver Windows shipped or fetched itself. For "
+                      + "network controllers the inbox driver is often an older vendor build, and it "
+                      + "exposes fewer of the advanced properties that decide latency behaviour. The "
+                      + "vendor driver is usually worth having for the settings it exposes rather "
+                      + "than for throughput. "
+                    : "Vendor network drivers are bound, which is generally what you want: they "
+                      + "expose the advanced properties that decide latency behaviour. ";
+
+                return (inbox.Length > 0 ? TweakState.Suboptimal : TweakState.Optimal,
+                    verdict
+                    + "Whichever is installed, the settings matter more than the version. The "
+                    + "energy-efficiency, interrupt moderation and power-management cards are where "
+                    + "the latency behaviour is actually decided — and on 2.5G Realtek controllers "
+                    + "in particular, energy-efficient Ethernet has a long and well documented "
+                    + "history of causing link renegotiation and packet loss under light traffic, "
+                    + "which is precisely the pattern that ruins a UDP game connection.");
+            }
+
+            case "DISPLAY":
+            {
+                var stale = drivers
+                    .Where(driver => DateTime.TryParse(driver.DriverDate, out var date)
+                                     && DateTime.UtcNow - date > TimeSpan.FromDays(365))
+                    .ToArray();
+
+                return stale.Length > 0
+                    ? (TweakState.Suboptimal,
+                        "A graphics driver here is over a year old. Graphics drivers are the one "
+                        + "component where staying current genuinely tends to pay, because engine "
+                        + "specific fixes and presentation-path work land in them continuously. That "
+                        + "is not an argument for the newest possible build — it is an argument "
+                        + "against a build this old.")
+                    : (TweakState.Optimal,
+                        "The graphics driver is recent. Worth knowing that the driver package is not "
+                        + "only the driver: the vendor control panel, its telemetry service and any "
+                        + "overlay install alongside it, and those are separate questions covered by "
+                        + "the services and overlay cards.");
+            }
+
+            case "HDC":
+            case "SCSIADAPTER":
+            {
+                // Judged on provenance rather than on the service name. Matching names for "raid"
+                // called Intel's VMD stack a Microsoft driver, which it is not.
+                var vendor = drivers.Where(driver => !driver.IsInboxDriver).ToArray();
+                if (vendor.Length > 0)
+                {
+                    return (TweakState.Suboptimal,
+                        $"A vendor storage stack is bound: {string.Join(", ", vendor.Select(driver => driver.Service).Where(service => service.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase))}. "
+                        + "Storage is the one class where the driver Windows ships is usually the "
+                        + "better choice — it is the best-tested path, and vendor storage stacks have "
+                        + "historically been a more common source of stalls than a cure for them. A "
+                        + "RAID or volume-management layer on a machine not actually running an array "
+                        + "is a translation layer for nothing. The catch is that moving off one means "
+                        + "changing the firmware storage mode, which makes the installation unbootable "
+                        + "unless it is prepared for first. Reported, not offered, for that reason.");
+                }
+
+                return (TweakState.Optimal,
+                    "The standard Windows storage driver is bound, which is the right answer here. "
+                    + "Storage is the one class where the inbox driver is generally preferable: it "
+                    + "is the best-tested path, and vendor storage stacks have historically been a "
+                    + "more common source of stalls than a cure for them.");
+            }
+
+            default:
+                return (TweakState.NotApplicable, "Reported for reference.");
+        }
+    }
+
     // ---- Devices -----------------------------------------------------------------------------
 
     /// <summary>
@@ -3519,6 +3695,90 @@ public static class ExpertTweakCatalog
                         "Disabled",
                         adapter.Observation),
                     moderation == 0 ? [] : [plan],
+                    null);
+            }
+
+            if (adapter.CanBePoweredDown == true)
+            {
+                // 0x18 is what the device-properties checkbox clears. Written as a DWord because
+                // that is the type the class key holds it in, unlike the NDIS keywords beside it.
+                var plan = new MutationPlan(
+                    $"NET-PNPCAP-{adapter.Name}.value",
+                    MutationKind.RegistryValue,
+                    adapter.RegistryKeyPath,
+                    "PnPCapabilities",
+                    "24",
+                    "DWord",
+                    $"Stop Windows powering down {adapter.Name} to save energy");
+
+                yield return new ExpertTweakCard(
+                    new ExpertTweakDefinition(
+                        $"NET-PNPCAP-{adapter.Name}",
+                        "Network",
+                        $"Adapter power-down ({adapter.Name})",
+                        "Windows is permitted to power this adapter down when it judges the link idle, "
+                        + "which is the \"allow the computer to turn off this device\" checkbox.",
+                        "A link that has been powered down has to come back before the next packet "
+                        + "moves, and on some controllers that means renegotiating. Traffic in a "
+                        + "competitive match is small and constant rather than heavy, which is exactly "
+                        + "the profile a power-saving heuristic reads as idle. This is named in every "
+                        + "documented fix for the 2.5G Realtek link-drop problem.",
+                        "The adapter no longer powers down at all, which costs a little energy at idle "
+                        + "and nothing else. Takes effect when the adapter next resets.",
+                        TweakRisk.Low,
+                        TweakScope.Machine,
+                        EvidenceQuality.Moderate,
+                        true,
+                        false,
+                        false,
+                        []),
+                    new TweakReading(
+                        TweakState.Suboptimal,
+                        "Windows may power this adapter down",
+                        "Never powered down",
+                        "The adapter has not been told to stay awake."),
+                    [plan],
+                    null);
+            }
+
+            if (adapter.FlowControl is { } flow)
+            {
+                var plan = new MutationPlan(
+                    $"NET-FLOW-{adapter.Name}.value",
+                    MutationKind.RegistryValue,
+                    adapter.RegistryKeyPath,
+                    "*FlowControl",
+                    "0",
+                    "String",
+                    $"Disable flow control on {adapter.Name}");
+
+                yield return new ExpertTweakCard(
+                    new ExpertTweakDefinition(
+                        $"NET-FLOW-{adapter.Name}",
+                        "Network",
+                        $"Flow control ({adapter.Name})",
+                        "Flow control lets the link partner ask this adapter to pause transmission "
+                        + "entirely for a period, using pause frames.",
+                        "A pause frame stops everything on the link, not the one flow that caused the "
+                        + "congestion, so a burst of unrelated traffic can hold up the packets carrying "
+                        + "server ticks. On a link with capacity to spare — which a competitive game on "
+                        + "a 500 Mbps connection very much is — there is nothing for it to protect and "
+                        + "a head-of-line stall to lose.",
+                        "On a saturated or duplex-mismatched link this can increase retransmissions. "
+                        + "Requires the adapter to reset, which briefly drops the link.",
+                        TweakRisk.Moderate,
+                        TweakScope.Machine,
+                        EvidenceQuality.Moderate,
+                        true,
+                        false,
+                        false,
+                        []),
+                    new TweakReading(
+                        flow == 0 ? TweakState.Optimal : TweakState.Suboptimal,
+                        flow == 0 ? "Disabled" : "Enabled",
+                        "Disabled",
+                        adapter.Observation),
+                    flow == 0 ? [] : [plan],
                     null);
             }
 

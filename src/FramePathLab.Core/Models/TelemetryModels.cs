@@ -306,6 +306,46 @@ public sealed record BootTimingState(
         => UsePlatformClock == true || UsePlatformTick == true;
 }
 
+/// <summary>What Windows actually bound to one device, as opposed to what is available for it.</summary>
+public sealed record InstalledDriver(
+    string DeviceName,
+    string DeviceClass,
+    string Provider,
+    string Version,
+    string DriverDate,
+    string InfName,
+    string Service)
+{
+    /// <summary>
+    /// Whether this is the driver Windows ships rather than one the hardware vendor supplies.
+    ///
+    /// Microsoft-provided is not a synonym for worse. It is the right answer for storage and
+    /// usually for USB, and the wrong one for an onboard audio codec, where the class driver
+    /// cannot do jack detection or channel configuration at all. What matters is knowing which
+    /// one is bound.
+    /// </summary>
+    public bool IsInboxDriver
+        => Provider.Contains("Microsoft", StringComparison.OrdinalIgnoreCase);
+
+    public string Describe()
+        => $"{DeviceName} — {(string.IsNullOrWhiteSpace(Provider) ? "provider unknown" : Provider)}"
+           + (string.IsNullOrWhiteSpace(Version) ? string.Empty : $" {Version}")
+           + (string.IsNullOrWhiteSpace(DriverDate) ? string.Empty : $", {DriverDate}")
+           + (string.IsNullOrWhiteSpace(Service) ? string.Empty : $", via {Service}");
+}
+
+public sealed record DriverInventory(
+    bool Available,
+    IReadOnlyList<InstalledDriver> Drivers,
+    string Observation)
+{
+    public static DriverInventory Unavailable(string reason) => new(false, [], reason);
+
+    public IEnumerable<InstalledDriver> InClass(string deviceClass)
+        => Drivers.Where(driver =>
+            driver.DeviceClass.Equals(deviceClass, StringComparison.OrdinalIgnoreCase));
+}
+
 /// <summary>One present device in a class the policy permits offering.</summary>
 public sealed record DeviceEntry(
     string InstanceId,
@@ -342,7 +382,20 @@ public sealed record NetworkAdapterState(
     int? EnergyEfficientEthernet,
     int? FlowControl,
     int? ReceiveCoalescing,
-    string Observation);
+    int? PowerManagementCapabilities,
+    int? LargeSendOffload,
+    string Observation)
+{
+    /// <summary>
+    /// Whether Windows is allowed to power the adapter down when it judges it idle.
+    ///
+    /// 0x18 in PnPCapabilities is the combination the device properties checkbox clears. An adapter
+    /// that has not been told otherwise is left able to do this, which on some controllers means
+    /// renegotiating the link during a quiet moment.
+    /// </summary>
+    public bool? CanBePoweredDown
+        => PowerManagementCapabilities is { } capabilities ? (capabilities & 0x18) != 0x18 : null;
+}
 
 /// <summary>One service's start configuration as the control manager records it.</summary>
 public sealed record ServiceState(string Name, string DisplayName, int StartType, int ServiceType)

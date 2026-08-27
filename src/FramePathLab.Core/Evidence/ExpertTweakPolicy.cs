@@ -133,6 +133,14 @@ public static class ExpertTweakPolicy
                 + "modern part this frequently costs more than it saves. Measure both states.");
         }
 
+        if (HasPrefix(id, "DRIVER-"))
+        {
+            return (TweakDisposition.DiagnosticOnly,
+                "Reports which driver is bound rather than arguing about which should be. The right "
+                + "answer differs by subsystem — vendor for an onboard codec, Windows for storage — "
+                + "so the useful thing is knowing what is actually installed.");
+        }
+
         if (HasPrefix(id, "SYSTEMDEV-"))
         {
             return (TweakDisposition.DiagnosticOnly,

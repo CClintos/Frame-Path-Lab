@@ -18,19 +18,6 @@ namespace FramePathLab.Windows.Scanning;
 /// </summary>
 public static class DeviceInventoryScanner
 {
-    /// <summary>
-    /// Instance-identifier prefixes that indicate real hardware sitting on a bus.
-    ///
-    /// Everything else enumerated under these classes is a software construct — miniports, virtual
-    /// adapters, proxies. They have no hardware behind them and therefore raise no interrupts, so
-    /// disabling one removes nothing at all. Offering them would pad the list with candidates that
-    /// cannot possibly help while diluting the few that can.
-    /// </summary>
-    private static readonly string[] HardwarePrefixes =
-    [
-        "PCI\\", "USB\\", "HDAUDIO\\", "BTH\\", "BTHENUM\\", "ACPI\\", "HID\\", "SCSI\\"
-    ];
-
     public static DeviceInventory Scan(AudioState audio, IReadOnlyList<NetworkAdapterState> adapters)
     {
         var handle = DeviceInterop.SetupDiGetClassDevs(
@@ -86,8 +73,7 @@ public static class DeviceInventoryScanner
                 // Software-enumerated nodes raise no interrupts, so disabling one cannot help. This
                 // is what removes most of the System class before policy sees it: the bulk of what
                 // circulates as System-device tweaking is enumerated under ROOT and has no hardware.
-                if (!HardwarePrefixes.Any(prefix =>
-                        instanceId.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+                if (!HardwareEnumerator.IsRealHardware(instanceId))
                 {
                     continue;
                 }

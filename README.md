@@ -231,6 +231,23 @@ A diagnostic card lists what was refused and why, so an absent item reads as a d
 
 **On what this is worth:** less than the internet thinks. Mechanically it does remove that driver's interrupt activity. Whether removing it matters depends on whether the driver was doing anything, and most idle devices were not. On the development machine the filters left exactly two candidates out of everything present. It is offered as an experiment with an A/B behind it, not as a recommendation.
 
+## Drivers
+
+"Vendor driver, or the one Windows installed?" is normally argued rather than checked, and the honest answer is per subsystem rather than universal. Windows records the provider, version, date and bound kernel service for every device, so the machine can be asked instead of the internet.
+
+One card per subsystem where the answer actually differs — audio, network, graphics, storage — reporting what is bound and what that means:
+
+- **Audio: the vendor driver, minus what ships beside it.** The generic High Definition Audio class driver cannot do jack detection, front-panel retasking or channel configuration, and on several codecs will not offer the full set of sample rates. For an onboard codec the vendor driver is the better choice. What it usually arrives with is not: board vendors bundle an audio effects suite, and a processing object inserted into the render path is a real and repeatedly measured source of added output latency. Install the driver, decline the effects suite, and check `AUDIO-EFFECTS-001`. If sound leaves over USB or a wireless receiver, none of this applies and the onboard codec becomes a candidate for the device list instead.
+- **Network: the driver matters less than its settings.** Inbox network drivers are often older vendor builds and expose fewer of the advanced properties that decide latency behaviour, which is the real reason to install the vendor package. Whichever is bound, the energy-efficiency, interrupt moderation, flow control and power-down cards are where the behaviour is actually set.
+- **Graphics: age is the signal.** Flagged past a year. Engine-specific fixes and presentation-path work land continuously; that is an argument against a stale build rather than for the newest possible one.
+- **Storage: the inbox driver usually wins.** The one class where what Windows ships is generally preferable — best-tested path, and vendor storage stacks have historically caused more stalls than they cured. A RAID or volume-management layer on a machine not running an array is a translation layer for nothing. Reported rather than offered, because moving off one means changing the firmware storage mode, which makes the installation unbootable unless prepared for first.
+
+Judged on recorded provenance, not on service-name pattern matching — matching names for "raid" called Intel's VMD stack a Microsoft driver, which it is not.
+
+Software devices are filtered first. The network class is mostly miniports, virtual adapters and debug shims, which carry driver bindings exactly like real hardware; without that filter the audit reports a dozen Microsoft-provided drivers that were never a choice in the first place. On the development machine that is 26 bindings down to 13.
+
+Nothing here writes. Installing a driver is an installer's job, and a class-key write is not a supported way to change one.
+
 ## Another machine
 
 The machine worth tuning and the machine worth sitting at are rarely the same one, and that is not incidental — a competitive machine is kept deliberately clean, and the point of tuning it is that it is about to be played on.

@@ -22,6 +22,12 @@ internal static class DeviceInterop
     internal const uint SpdrpClassGuid = 0x08;
     internal const uint SpdrpFriendlyName = 0x0C;
 
+    /// <summary>The kernel service the device is bound to — "storahci", "rcraid", "RTKVHD64".</summary>
+    internal const uint SpdrpService = 0x04;
+
+    /// <summary>The device's subpath under the class root, where the provider and version live.</summary>
+    internal const uint SpdrpDriver = 0x09;
+
     /// <summary>Device node has a problem recorded against it.</summary>
     internal const uint DnHasProblem = 0x00000400;
 
