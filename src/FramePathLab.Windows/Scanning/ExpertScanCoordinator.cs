@@ -70,7 +70,7 @@ public sealed class ExpertScanCoordinator
         var primary = timings.FirstOrDefault(timing => timing.IsPrimary) ?? timings.FirstOrDefault();
         var memory = SmbiosMemoryScanner.Scan();
         var steam = PlatformStateScanner.ReadSteamActivity();
-        var (forcedClock, counterFrequency) = PlatformStateScanner.ReadPlatformTimer();
+        var (_, counterFrequency) = PlatformStateScanner.ReadPlatformTimer();
         bool? msiEnabled = null;
         string? msiPath = null;
         const string msiObservation =
@@ -82,6 +82,14 @@ public sealed class ExpertScanCoordinator
         var (hasAffinityPolicy, affinityObservation) = PlatformStateScanner.ReadInterruptAffinityPolicy();
         var (defenderReadable, defenderPaths, defenderObservation) = PlatformStateScanner.ReadDefenderExclusions();
         var bootTiming = PlatformStateScanner.ReadBootTiming();
+
+        // The boot configuration is the authoritative answer to "is a platform timer forced", and
+        // until now it was read and then thrown away: the gate consulted the QPC-derived value
+        // instead, which is deliberately always unknown. That combination meant the platform-timer
+        // refusal could never be lifted on any machine, elevated or not. An unelevated session
+        // still cannot read the BCD, so the value stays unknown there and the gate still fails
+        // closed — which is the intended behaviour rather than a gap.
+        var forcedClock = bootTiming.Readable ? bootTiming.HasForcedPlatformTimer : (bool?)null;
         var (nicMsi, nicMsiObservation) = PlatformStateScanner.ReadNetworkInterruptMode();
         var (mitigationsOverridden, mitigationObservation) = PlatformStateScanner.ReadSpeculativeMitigations();
         var (reservedMask, reservedObservation) = PlatformStateScanner.ReadReservedCpuSets();

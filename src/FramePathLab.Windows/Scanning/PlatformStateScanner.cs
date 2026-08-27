@@ -274,11 +274,17 @@ public static partial class PlatformStateScanner
                     "Boot configuration requires an elevated session; it was not read.");
             }
 
+            // bcdedit only prints a boot option that has been explicitly set, so an absent boolean
+            // means the option is not configured — not that its state is unknown. Reporting absence
+            // as unknown left every correctly configured machine looking unreadable, which held the
+            // platform-timer gate shut on exactly the machines that should have passed it. The
+            // enumeration succeeding is what makes absence meaningful, so it is only read that way
+            // here, inside the success path.
             return new BootTimingState(
                 true,
-                ReadFlag(output, "useplatformclock"),
-                ReadFlag(output, "useplatformtick"),
-                ReadFlag(output, "disabledynamictick"),
+                ReadFlag(output, "useplatformclock") ?? false,
+                ReadFlag(output, "useplatformtick") ?? false,
+                ReadFlag(output, "disabledynamictick") ?? false,
                 ReadWord(output, "tscsyncpolicy"),
                 "Boot configuration read.",
                 ReadWord(output, "hypervisorlaunchtype"));
