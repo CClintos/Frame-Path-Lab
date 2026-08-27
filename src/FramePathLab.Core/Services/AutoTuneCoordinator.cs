@@ -143,12 +143,36 @@ public sealed class AutoTuneCoordinator
         CancellationToken cancellationToken)
     {
         var steps = new List<AutoTuneStep>();
-        var current = baseline;
+
+        // The baseline handed in was measured before the first candidate. It is only valid as a
+        // before-state until the machine changes or enough time passes for it to drift, so it is
+        // consumed once and then re-measured per candidate.
+        CaptureAnalysis? current = baseline;
         var restartRequired = false;
 
         foreach (var card in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            var measurable = !card.Definition.RequiresReboot;
+
+            // Measure the before-state immediately before the change, not several candidates ago.
+            // Repeated runs on an untouched machine trend upward as it warms, so a baseline carried
+            // forward puts all the accumulated drift inside the last comparison and biases late
+            // candidates toward a regression they did not cause. The cost is one extra benchmark
+            // run per candidate; the alternative is a verdict that depends on queue position.
+            if (measurable && current is null)
+            {
+                progress?.Report($"Re-measuring the baseline before {card.Definition.Title}.");
+                current = _benchmark.Run(cancellationToken);
+                if (current.Outcome == ResultOutcome.Invalid)
+                {
+                    steps.Add(new AutoTuneStep(card.Definition.Id, card.Definition.Title, null, null, false,
+                        $"Not applied: the baseline re-measurement failed. {FirstWarning(current)}"));
+                    break;
+                }
+            }
+
             progress?.Report($"Applying {card.Definition.Title}.");
 
             TweakTransaction transaction;
@@ -169,6 +193,7 @@ public sealed class AutoTuneCoordinator
             if (card.Definition.RequiresReboot)
             {
                 restartRequired = true;
+                current = null;
                 steps.Add(new AutoTuneStep(card.Definition.Id, card.Definition.Title,
                     transaction.TransactionId, null, true,
                     "Applied and kept unmeasured: it takes effect after a restart. Re-run to measure it."));
@@ -177,7 +202,7 @@ public sealed class AutoTuneCoordinator
 
             progress?.Report($"Measuring {card.Definition.Title}.");
             var after = _benchmark.Run(cancellationToken);
-            var verification = TweakVerifier.Compare(current, after, transaction);
+            var verification = TweakVerifier.Compare(current!, after, transaction);
 
             // An unmeasurable pair is not a pass. Keeping a change because the measurement failed
             // would put the tool right back where a tweak list is: applying things and calling it
@@ -192,9 +217,33 @@ public sealed class AutoTuneCoordinator
                 break;
             }
 
+            // A recommended default that measured as no change is kept, not reverted.
+            //
+            // These are not frame-rate claims, so "the benchmark could not see it" is not evidence
+            // against them. Pointer acceleration is the case that makes it obvious: the benchmark
+            // never moves the mouse, so acceleration can only ever measure as no change — and
+            // reverting on that verdict turns acceleration back on, which is the opposite of what
+            // the policy says and worse for aim. Capture, telemetry and desktop transparency are
+            // the same shape. A default that actually *regressed* the tails is still reverted
+            // below, because that is a measurement the workload genuinely made.
+            if (verification.Verdict == VerificationVerdict.NoMeasuredChange
+                && card.Definition.Disposition == TweakDisposition.RecommendDefault)
+            {
+                current = null;
+                steps.Add(new AutoTuneStep(card.Definition.Id, card.Definition.Title,
+                    transaction.TransactionId, verification, true,
+                    "Kept — no measured frame-time effect, which is expected: this is a recommended default "
+                    + "held on its documented behaviour rather than on a frame-rate claim."));
+                continue;
+            }
+
             if (verification.ShouldRevert)
             {
                 var reverted = _engine.Revert(transaction.TransactionId, $"autotune: {verification.Verdict}");
+
+                // The revert puts the configuration back, but two benchmark runs have passed since
+                // this before-state was captured. Re-measure rather than reuse it.
+                current = null;
                 steps.Add(new AutoTuneStep(card.Definition.Id, card.Definition.Title,
                     transaction.TransactionId, verification, false,
                     $"Reverted — {verification.Finding} "
@@ -204,9 +253,9 @@ public sealed class AutoTuneCoordinator
                 continue;
             }
 
-            // Only a kept change moves the baseline forward, so each subsequent comparison is
-            // against the machine as it now stands rather than against where it started.
-            current = after;
+            // The machine now differs from the state this pair measured, and the next candidate
+            // gets its own adjacent before-state rather than inheriting this one.
+            current = null;
             steps.Add(new AutoTuneStep(card.Definition.Id, card.Definition.Title,
                 transaction.TransactionId, verification, true,
                 $"Kept — {verification.Finding}"));
@@ -266,17 +315,44 @@ public sealed class AutoTuneCoordinator
             return Summarize(level, AutoTuneMode.Bundle, candidates.Count, kept, restartRequired);
         }
 
-        // The set did not earn its place. Reversing all of it is the only defensible response,
-        // because a bundled measurement cannot say which member was responsible.
+        // The experiments did not earn their place. Reversing all of them is the only defensible
+        // response, because a bundled measurement cannot say which member was responsible.
         progress?.Report(verification.Verdict == VerificationVerdict.NotComparable
-            ? "The measurement could not be compared. Reverting all of it."
-            : "The set did not improve the measurement. Reverting all of it.");
+            ? "The measurement could not be compared. Reverting the experiments."
+            : "The set did not improve the measurement. Reverting the experiments.");
+
+        // Recommended defaults are exempt for the same reason they are exempt in isolate mode: they
+        // are not frame-rate claims, so "the benchmark could not see it" is not evidence against
+        // them. Rolling pointer acceleration back on because a benchmark that never moves the mouse
+        // measured no change would be the tool actively making the machine worse.
+        //
+        // The exemption covers that verdict only. If the set actually regressed the tails, or the
+        // captures could not be compared at all, everything goes back — a bundled run cannot say
+        // which member was responsible, so no member gets the benefit of the doubt.
+        var defaults = verification.Verdict == VerificationVerdict.NoMeasuredChange
+            ? candidates
+                .Where(card => card.Definition.Disposition == TweakDisposition.RecommendDefault)
+                .Select(card => card.Definition.Id)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         var updated = new List<AutoTuneStep>();
         foreach (var step in steps)
         {
             if (step.TransactionId is null)
             {
                 updated.Add(step);
+                continue;
+            }
+
+            if (defaults.Contains(step.TweakId))
+            {
+                updated.Add(step with
+                {
+                    Verification = verification,
+                    Outcome = "Kept: a recommended default, held on its documented behaviour rather than "
+                              + "judged by a frame-time measurement it does not claim to move."
+                });
                 continue;
             }
 

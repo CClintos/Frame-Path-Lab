@@ -91,34 +91,62 @@ public sealed class TweakJournalStore
             return [];
         }
 
+        if (TryReadVerified(_path, out var transactions))
+        {
+            return transactions;
+        }
+
+        // Falling over to the previous generation is not a weakening of the integrity check — that
+        // copy is verified by the same hash. It exists because the failure mode without it is the
+        // worst one this component has: a single damaged byte makes every outstanding change
+        // unrevertible through the application, which is precisely the situation the ledger is
+        // supposed to prevent. File.Replace leaves the last good copy here on every write.
+        if (File.Exists(_backupPath) && TryReadVerified(_backupPath, out var recovered))
+        {
+            return recovered;
+        }
+
+        throw new InvalidDataException(
+            "The expert-tweak journal failed its corruption check and was not used, and the previous "
+            + "generation beside it could not be verified either. Reverting from a modified ledger could "
+            + $"write the wrong prior value. The files are '{_path}' and '{_backupPath}'; the outstanding "
+            + "before-states are recorded in them as plain JSON and can be restored by hand.");
+    }
+
+    /// <summary>
+    /// Reads one journal file and returns its transactions only when the hash over them matches.
+    /// A damaged, truncated or oversized file is reported as unusable rather than partially trusted.
+    /// </summary>
+    private static bool TryReadVerified(string path, out List<TweakTransaction> transactions)
+    {
+        transactions = [];
         try
         {
-            var bytes = File.ReadAllBytes(_path);
+            var bytes = File.ReadAllBytes(path);
             if (bytes.Length > MaximumJournalBytes)
             {
-                throw new InvalidDataException("The expert-tweak journal exceeded its bounded size.");
+                return false;
             }
 
             var envelope = JsonSerializer.Deserialize<JournalEnvelope>(bytes, SerializerOptions);
             if (envelope?.Transactions is null)
             {
-                return [];
+                return false;
             }
 
             var recomputed = Convert.ToHexString(
                 SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(envelope.Transactions, SerializerOptions)));
             if (!string.Equals(recomputed, envelope.Sha256, StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidDataException(
-                    "The expert-tweak journal failed its corruption check and was not used. "
-                    + "Reverting from a modified ledger could write the wrong prior value.");
+                return false;
             }
 
-            return envelope.Transactions.ToList();
+            transactions = envelope.Transactions.ToList();
+            return true;
         }
-        catch (JsonException exception)
+        catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException)
         {
-            throw new InvalidDataException("The expert-tweak journal could not be parsed.", exception);
+            return false;
         }
     }
 

@@ -1,5 +1,4 @@
-using System.Diagnostics;
-using System.Globalization;
+﻿using System.Globalization;
 using System.Security;
 using FramePathLab.Core.Abstractions;
 using FramePathLab.Core.Models;
@@ -215,6 +214,9 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
             case MutationKind.PowerOverlayScheme:
                 WriteOverlayScheme(value);
                 break;
+            case MutationKind.DeviceState:
+                WriteDeviceState(plan, value);
+                break;
             case MutationKind.ProcessAffinity:
             case MutationKind.ProcessPriority:
             case MutationKind.ProcessPowerThrottling:
@@ -271,7 +273,17 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
         if (long.TryParse(left, NumberStyles.Integer, CultureInfo.InvariantCulture, out var leftNumber)
             && long.TryParse(right, NumberStyles.Integer, CultureInfo.InvariantCulture, out var rightNumber))
         {
-            return leftNumber == rightNumber;
+            if (leftNumber == rightNumber)
+            {
+                return true;
+            }
+
+            // A DWord is 32 bits with no sign, but it reads back through a signed int. The catalogue
+            // writes NetworkThrottlingIndex as 4294967295 and the machine reports it as -1; without
+            // this the read-back check would call a correct write unverified and roll it straight
+            // back. Compare the stored 32 bits rather than the two decimal spellings of them.
+            return string.Equals(plan.ValueType, "DWord", StringComparison.OrdinalIgnoreCase)
+                   && unchecked((int)leftNumber) == unchecked((int)rightNumber);
         }
 
         return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
@@ -299,15 +311,41 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
         return (hive, path);
     }
 
+    /// <summary>
+    /// The registry kinds a before-state can be carried through the ledger as text and written back
+    /// unchanged. Anything else â€” binary, multi-string â€” has no faithful round trip through a
+    /// string, and a restore that wrote its <c>ToString()</c> back would replace the prior value
+    /// with the literal text "System.Byte[]".
+    /// </summary>
+    private static bool IsRoundTrippable(RegistryValueKind kind)
+        => kind is RegistryValueKind.DWord
+            or RegistryValueKind.QWord
+            or RegistryValueKind.String
+            or RegistryValueKind.ExpandString;
+
     private static string? ReadRegistry(MutationPlan plan, out bool exists)
     {
         var (hive, path) = SplitRegistryTarget(plan.Target);
         using var key = hive.OpenSubKey(path, writable: false);
         var value = key?.GetValue(plan.ValueName);
         exists = value is not null;
+        if (value is null)
+        {
+            return null;
+        }
+
+        var kind = key!.GetValueKind(plan.ValueName);
+        if (!IsRoundTrippable(kind))
+        {
+            // Refusing here is what keeps the promise that nothing is written unless it can be put
+            // back. Capture calls this path, so the tweak is abandoned before any write happens.
+            throw new InvalidOperationException(
+                $"'{plan.ValueName}' under '{plan.Target}' is a {kind} value. FramePath Lab only writes values "
+                + "whose prior state can be captured and restored exactly, so no change was made.");
+        }
+
         return value switch
         {
-            null => null,
             int number => number.ToString(CultureInfo.InvariantCulture),
             long number => number.ToString(CultureInfo.InvariantCulture),
             _ => value.ToString()
@@ -338,16 +376,41 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
         using var key = hive.CreateSubKey(path, writable: true)
                         ?? throw new InvalidOperationException($"Registry key '{plan.Target}' could not be opened for writing.");
 
-        if (string.Equals(plan.ValueType, "DWord", StringComparison.OrdinalIgnoreCase))
+        // The kind already on the machine wins over the kind the catalogue declared. Several of the
+        // network adapter keywords are strings on one driver and numbers on another, and a restore
+        // that changed a value's type would leave the adapter with a property its driver no longer
+        // parses â€” a worse outcome than the setting simply not applying. The declared type is the
+        // fallback for a value that does not exist yet.
+        var kind = ResolveWriteKind(key, plan);
+
+        switch (kind)
         {
-            key.SetValue(
-                plan.ValueName,
-                int.Parse(value, CultureInfo.InvariantCulture),
-                RegistryValueKind.DWord);
-            return;
+            case RegistryValueKind.DWord:
+                key.SetValue(plan.ValueName, unchecked((int)long.Parse(value, CultureInfo.InvariantCulture)), kind);
+                return;
+            case RegistryValueKind.QWord:
+                key.SetValue(plan.ValueName, long.Parse(value, CultureInfo.InvariantCulture), kind);
+                return;
+            default:
+                key.SetValue(plan.ValueName, value, kind);
+                return;
+        }
+    }
+
+    private static RegistryValueKind ResolveWriteKind(RegistryKey key, MutationPlan plan)
+    {
+        if (key.GetValue(plan.ValueName) is not null)
+        {
+            var existing = key.GetValueKind(plan.ValueName);
+            if (IsRoundTrippable(existing))
+            {
+                return existing;
+            }
         }
 
-        key.SetValue(plan.ValueName, value, RegistryValueKind.String);
+        return string.Equals(plan.ValueType, "DWord", StringComparison.OrdinalIgnoreCase)
+            ? RegistryValueKind.DWord
+            : RegistryValueKind.String;
     }
 
     private static void DeleteRegistryValue(MutationPlan plan)
@@ -545,160 +608,6 @@ public sealed class WindowsMutationExecutor : IMutationExecutor
         {
             throw new InvalidOperationException(
                 $"The device state could not be changed (configuration manager result {result}).");
-        }
-    }
-
-    // ---- Process --------------------------------------------------------------------------
-
-    private static Process? FindProcess(string processName)
-    {
-        var processes = Process.GetProcessesByName(processName);
-        if (processes.Length == 0)
-        {
-            return null;
-        }
-
-        for (var index = 1; index < processes.Length; index++)
-        {
-            processes[index].Dispose();
-        }
-
-        return processes[0];
-    }
-
-    private static string? ReadProcessAffinity(MutationPlan plan, out bool exists)
-    {
-        using var process = FindProcess(plan.Target);
-        if (process is null)
-        {
-            exists = false;
-            return null;
-        }
-
-        try
-        {
-            exists = true;
-            return ((ulong)process.ProcessorAffinity).ToString(CultureInfo.InvariantCulture);
-        }
-        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
-        {
-            exists = false;
-            return null;
-        }
-    }
-
-    private static void WriteProcessAffinity(MutationPlan plan, string value)
-    {
-        using var process = FindProcess(plan.Target)
-                            ?? throw new InvalidOperationException($"Process '{plan.Target}' is not running.");
-        process.ProcessorAffinity = (nint)ulong.Parse(value, CultureInfo.InvariantCulture);
-    }
-
-    private static string? ReadProcessPriority(MutationPlan plan, out bool exists)
-    {
-        using var process = FindProcess(plan.Target);
-        if (process is null)
-        {
-            exists = false;
-            return null;
-        }
-
-        try
-        {
-            exists = true;
-            return process.PriorityClass.ToString();
-        }
-        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
-        {
-            exists = false;
-            return null;
-        }
-    }
-
-    private static void WriteProcessPriority(MutationPlan plan, string value)
-    {
-        using var process = FindProcess(plan.Target)
-                            ?? throw new InvalidOperationException($"Process '{plan.Target}' is not running.");
-        process.PriorityClass = Enum.Parse<ProcessPriorityClass>(value, ignoreCase: true);
-    }
-
-    private static string? ReadProcessPowerThrottling(MutationPlan plan, out bool exists)
-    {
-        using var process = FindProcess(plan.Target);
-        if (process is null)
-        {
-            exists = false;
-            return null;
-        }
-
-        var handle = ExpertNativeMethods.OpenProcess(
-            ExpertNativeMethods.ProcessQueryInformation, false, (uint)process.Id);
-        if (handle == 0)
-        {
-            exists = false;
-            return null;
-        }
-
-        try
-        {
-            var state = new ProcessPowerThrottlingState();
-            if (!ExpertNativeMethods.GetProcessInformation(
-                    handle,
-                    ExpertNativeMethods.ProcessInformationClassPowerThrottling,
-                    ref state,
-                    (uint)System.Runtime.InteropServices.Marshal.SizeOf<ProcessPowerThrottlingState>()))
-            {
-                exists = false;
-                return null;
-            }
-
-            exists = true;
-            var throttled = (state.ControlMask & ExpertNativeMethods.ProcessPowerThrottlingExecutionSpeed) != 0
-                            && (state.StateMask & ExpertNativeMethods.ProcessPowerThrottlingExecutionSpeed) != 0;
-            return throttled ? "1" : "0";
-        }
-        finally
-        {
-            ExpertNativeMethods.CloseHandle(handle);
-        }
-    }
-
-    private static void WriteProcessPowerThrottling(MutationPlan plan, string value)
-    {
-        using var process = FindProcess(plan.Target)
-                            ?? throw new InvalidOperationException($"Process '{plan.Target}' is not running.");
-        var handle = ExpertNativeMethods.OpenProcess(
-            ExpertNativeMethods.ProcessSetInformation | ExpertNativeMethods.ProcessQueryInformation,
-            false,
-            (uint)process.Id);
-        if (handle == 0)
-        {
-            throw new InvalidOperationException(
-                $"Process '{plan.Target}' could not be opened to change power throttling.");
-        }
-
-        try
-        {
-            var throttle = int.Parse(value, CultureInfo.InvariantCulture) != 0;
-            var state = new ProcessPowerThrottlingState
-            {
-                Version = ExpertNativeMethods.ProcessPowerThrottlingCurrentVersion,
-                ControlMask = ExpertNativeMethods.ProcessPowerThrottlingExecutionSpeed,
-                StateMask = throttle ? ExpertNativeMethods.ProcessPowerThrottlingExecutionSpeed : 0
-            };
-
-            if (!ExpertNativeMethods.SetProcessInformation(
-                    handle,
-                    ExpertNativeMethods.ProcessInformationClassPowerThrottling,
-                    ref state,
-                    (uint)System.Runtime.InteropServices.Marshal.SizeOf<ProcessPowerThrottlingState>()))
-            {
-                throw new InvalidOperationException("Power throttling state could not be written.");
-            }
-        }
-        finally
-        {
-            ExpertNativeMethods.CloseHandle(handle);
         }
     }
 }

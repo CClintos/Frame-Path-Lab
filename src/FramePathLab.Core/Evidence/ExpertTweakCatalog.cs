@@ -1538,18 +1538,36 @@ public static class ExpertTweakCatalog
                 null);
         }
 
+        // Whether the stacked cache covers the whole processor decides the placement advice, and it
+        // is the opposite answer on the two shapes this signature appears in. A single-die part
+        // carries one cache domain, so nothing is gained by choosing between cores. A part with a
+        // stacked die alongside a conventional one carries two, and which die the game runs on is
+        // then the single largest scheduling decision on the machine — so saying "placement has
+        // nothing to choose between" there would be exactly backwards.
+        var stackedGroups = cpu.CoreGroups.Count(group =>
+            group.PhysicalCoreCount > 0
+            && group.LastLevelCacheBytes / (ulong)group.PhysicalCoreCount >= 8UL * 1024 * 1024);
+        var uniform = stackedGroups == cpu.CoreGroups.Count;
+
         return new ExpertTweakCard(
             definition,
             new TweakReading(
                 TweakState.Optimal,
                 $"{cpu.Brand} — {cpu.LargestCachePerCoreMiB:0.#} MiB last-level cache per core across "
-                + $"{cpu.CoreGroups.Count} group(s)",
+                + $"{cpu.CoreGroups.Count} group(s)"
+                + (uniform ? string.Empty : $", stacked on {stackedGroups} of them"),
                 "Tune in firmware, not in Windows",
-                "Stacked cache detected. Because every core shares one cache domain here, thread placement has "
-                + "nothing to choose between and this catalogue offers no affinity change. The levers that do "
-                + "may be firmware power/voltage policy and memory stability. Treat the processor performance "
-                + "floor below as an A/B rather than a default, because a raised floor competes with boost "
-                + "headroom on a power- and thermally-limited part."),
+                (uniform
+                    ? "Stacked cache detected across every cache domain, so thread placement has nothing to "
+                      + "choose between and this catalogue offers no affinity change. "
+                    : "Asymmetric stacked cache detected: one die carries the stacked cache and another does "
+                      + "not. Which die the game runs on matters more here than anything else in this "
+                      + "catalogue, and it is decided by the chipset driver and the game bar's own hints "
+                      + "rather than by a value this application writes. Confirm the game is running on the "
+                      + "cache-carrying die before drawing conclusions from any measurement below. ")
+                + "The levers that do apply are firmware power/voltage policy and memory stability. Treat the "
+                + "processor performance floor below as an A/B rather than a default, because a raised floor "
+                + "competes with boost headroom on a power- and thermally-limited part."),
             [],
             null);
     }

@@ -108,9 +108,16 @@ public sealed class ExpertTweakEngine
                 {
                     applied.Add(ApplyCore(card));
                 }
-                catch (Exception exception) when (exception is InvalidOperationException or UnauthorizedAccessException)
+                catch (Exception exception) when (exception is InvalidOperationException
+                                                      or UnauthorizedAccessException
+                                                      or System.Security.SecurityException
+                                                      or IOException
+                                                      or TimeoutException)
                 {
-                    // One refused card must not abandon the rest; each is independent.
+                    // One refused card must not abandon the rest; each is independent. The journal
+                    // can also fail on its own account — another instance holding the lock, or a
+                    // transient IO error — and that is no reason to abandon the remaining cards
+                    // either, which the narrower catch list here used to do.
                     applied.Add(new TweakTransaction(
                         Guid.Empty,
                         card.Definition.Id,

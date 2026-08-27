@@ -25,35 +25,21 @@ internal static class ExpertNativeMethods
         out nuint processAffinityMask,
         out nuint systemAffinityMask);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    internal static extern bool SetProcessAffinityMask(nint process, nuint processAffinityMask);
-
+    // Deliberately absent: SetProcessAffinityMask, SetProcessInformation and any access right that
+    // permits changing another process's execution. The catalogue refuses thread placement and
+    // EcoQoS on the game because acquiring those rights against a protected title is behaviour an
+    // anti-cheat cannot distinguish from tampering. Declaring the imports and never calling them
+    // still puts them in the binary's import table, so they are not declared at all.
+    //
+    // The one process right that remains is PROCESS_QUERY_LIMITED_INFORMATION, which is read-only
+    // and is used solely to read the game's current affinity mask for the diagnostic card.
     [DllImport("kernel32.dll", SetLastError = true)]
     internal static extern nint OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     internal static extern bool CloseHandle(nint handle);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    internal static extern bool GetProcessInformation(
-        nint process,
-        int processInformationClass,
-        ref ProcessPowerThrottlingState processInformation,
-        uint processInformationSize);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    internal static extern bool SetProcessInformation(
-        nint process,
-        int processInformationClass,
-        ref ProcessPowerThrottlingState processInformation,
-        uint processInformationSize);
-
-    internal const uint ProcessQueryInformation = 0x0400;
     internal const uint ProcessQueryLimitedInformation = 0x1000;
-    internal const uint ProcessSetInformation = 0x0200;
-    internal const int ProcessInformationClassPowerThrottling = 4;
-    internal const uint ProcessPowerThrottlingCurrentVersion = 1;
-    internal const uint ProcessPowerThrottlingExecutionSpeed = 0x1;
 
     // ---- Processor power information ------------------------------------------------------
     internal const int ProcessorInformationLevel = 11;
@@ -192,14 +178,6 @@ internal static class ExpertNativeMethods
 
     [DllImport("gdi32.dll")]
     internal static extern int D3DKMTCloseAdapter(ref D3dkmtCloseAdapter closeAdapter);
-}
-
-[StructLayout(LayoutKind.Sequential)]
-internal struct ProcessPowerThrottlingState
-{
-    public uint Version;
-    public uint ControlMask;
-    public uint StateMask;
 }
 
 [StructLayout(LayoutKind.Sequential)]

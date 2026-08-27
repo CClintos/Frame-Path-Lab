@@ -198,11 +198,15 @@ public static class ExpertTweakPolicy
                 + "when the system is actually contended. Measure it under the contention you actually play in.");
         }
 
-        if (HasPrefix(id, "NET-MODERATION-", "NET-EEE-", "NET-RSC-"))
+        // Every NIC control the catalogue builds a plan for must appear here. A prefix missing from
+        // this list falls through to the diagnostic default, which silently strips the plan and
+        // shows a generic reason — so the card reads as a deliberate exclusion when it is really an
+        // oversight. NET-PNPCAP- and NET-FLOW- were exactly that.
+        if (HasPrefix(id, "NET-MODERATION-", "NET-EEE-", "NET-RSC-", "NET-FLOW-", "NET-PNPCAP-"))
         {
             return (TweakDisposition.OptInExperiment,
                 "Experiment: these are the adapter's own documented properties, the same ones its driver exposes "
-                + "in Device Manager, and they are restored exactly. Both trade a little power and CPU for "
+                + "in Device Manager, and they are restored exactly. Each trades a little power or CPU for "
                 + "delivery latency. Applying resets the adapter, which briefly drops the link.");
         }
 

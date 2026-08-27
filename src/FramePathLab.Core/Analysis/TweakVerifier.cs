@@ -59,7 +59,13 @@ public static class TweakVerifier
 
             var changePercent = 100d * (afterValue.Value - beforeValue.Value) / Math.Abs(beforeValue.Value);
             var improved = lowerIsBetter ? changePercent < 0 : changePercent > 0;
-            var meaningful = Math.Abs(changePercent) >= NoiseBandPercent;
+
+            // A metric sitting near zero on both sides has not moved in any way worth acting on,
+            // however large the ratio between the two looks.
+            var belowFloor = NearZeroFloors.TryGetValue(id, out var floor)
+                             && Math.Abs(beforeValue.Value) < floor
+                             && Math.Abs(afterValue.Value) < floor;
+            var meaningful = !belowFloor && Math.Abs(changePercent) >= NoiseBandPercent;
 
             deltas.Add(new MetricDelta(
                 id,
@@ -98,12 +104,24 @@ public static class TweakVerifier
         // The tails carry the weight. A change that lifts the average while making the worst
         // frames worse is a change a competitive player should reject, so the decision is driven
         // by the percentile and consistency metrics rather than by mean frame rate.
-        var tailIds = new[] { "p99_frame_ms", "p999_frame_ms", "frame_stddev", "over_budget_pct" };
-        var tails = deltas.Where(delta => tailIds.Contains(delta.MetricId)).ToArray();
+        //
+        // The tail metrics are weighed by how far they moved, not counted. Counting them let two
+        // marginal 2.1% improvements outvote a 20% P99 regression and return "improved" — the exact
+        // reading this tool exists to refuse. P99 carries the most weight because it is the frame
+        // a player actually feels in a duel.
+        var tails = deltas.Where(delta => TailWeights.ContainsKey(delta.MetricId)).ToArray();
+
+        var improvedWeight = tails.Where(delta => delta.IsImprovement)
+            .Sum(delta => TailWeights[delta.MetricId] * Math.Abs(delta.ChangePercent));
+        var regressedWeight = tails.Where(delta => delta.IsRegression)
+            .Sum(delta => TailWeights[delta.MetricId] * Math.Abs(delta.ChangePercent));
 
         var improvedTails = tails.Count(delta => delta.IsImprovement);
         var regressedTails = tails.Count(delta => delta.IsRegression);
         var anyMeaningful = deltas.Any(delta => delta.IsMeaningful);
+
+        // A weighted lead of less than this much is treated as a tie rather than a verdict.
+        const double DecisiveWeightRatio = 1.25;
 
         if (!anyMeaningful)
         {
@@ -120,7 +138,7 @@ public static class TweakVerifier
                 + "attention elsewhere, or repeat the pair if you believe the scenario was not representative.");
         }
 
-        if (regressedTails > improvedTails)
+        if (regressedWeight > improvedWeight * DecisiveWeightRatio)
         {
             return new TweakVerification(
                 transaction?.TransactionId,
@@ -137,7 +155,7 @@ public static class TweakVerifier
                       + "frame rate looks better.");
         }
 
-        if (improvedTails > regressedTails)
+        if (improvedWeight > regressedWeight * DecisiveWeightRatio)
         {
             return new TweakVerification(
                 transaction?.TransactionId,
@@ -194,6 +212,33 @@ public static class TweakVerifier
 
         return null;
     }
+
+    /// <summary>
+    /// How much each tail metric counts toward the verdict. P99 is what a player feels in a duel;
+    /// P99.9 is rarer and noisier; the consistency and over-budget figures are supporting evidence
+    /// that largely restates what the percentiles already said.
+    /// </summary>
+    private static readonly Dictionary<string, double> TailWeights = new(StringComparer.Ordinal)
+    {
+        ["p99_frame_ms"] = 3.0,
+        ["p999_frame_ms"] = 1.5,
+        ["frame_stddev"] = 1.0,
+        ["over_budget_pct"] = 1.0
+    };
+
+    /// <summary>
+    /// Metrics whose baseline can sit near zero, with the floor below which a relative change says
+    /// nothing.
+    ///
+    /// Every metric here is judged as a percentage of its own before-value. That is meaningless
+    /// when the before-value is already almost nothing: on a machine holding its frame budget,
+    /// 0.05% of frames over budget becoming 0.06% is a 20% "regression" and a 0.01 percentage
+    /// point change. Left unguarded it outvotes real movement in the percentiles.
+    /// </summary>
+    private static readonly Dictionary<string, double> NearZeroFloors = new(StringComparer.Ordinal)
+    {
+        ["over_budget_pct"] = 0.5
+    };
 
     private static readonly (string Id, string Label, bool LowerIsBetter)[] ComparedMetrics =
     [

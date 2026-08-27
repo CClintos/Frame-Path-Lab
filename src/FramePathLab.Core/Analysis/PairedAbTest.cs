@@ -124,10 +124,14 @@ public static class PairedAbTest
 
         // Conclusive means the whole interval sits on one side of the practical threshold. An
         // interval straddling it says the measurement cannot tell, which is a real answer.
+        //
+        // The weaker rule this replaced — interval excludes zero, point estimate past the threshold
+        // — called a mean of 2.1% with an interval of 0.3% to 3.9% conclusive, even though most of
+        // that interval lies below the threshold the tool says is worth acting on. Judging the
+        // interval rather than the point estimate is what the comment always claimed.
         var improvedDirection = lowerIsBetter ? mean < 0 : mean > 0;
-        var magnitude = Math.Abs(mean);
         var intervalExcludesZero = low > 0 || high < 0;
-        var conclusive = intervalExcludesZero && magnitude >= PracticalThresholdPercent;
+        var conclusive = low > PracticalThresholdPercent || high < -PracticalThresholdPercent;
 
         var finding = conclusive
             ? $"{metricLabel} moved {mean:+0.##;-0.##}% across {pairs.Count} pairs "
@@ -146,12 +150,28 @@ public static class PairedAbTest
     }
 
     /// <summary>
+    /// The fewest pairs that may end a run on a positive verdict.
+    ///
+    /// Stopping as soon as the interval looks convincing is optional stopping: the interval is
+    /// re-examined after every pair, and each extra look is another chance for noise alone to
+    /// produce one that clears the bar. The nominal 95% is not preserved under repeated peeking,
+    /// so the real false-positive rate sits above the stated one. Two things hold that down here —
+    /// the conclusive rule requires the whole interval to clear the practical threshold rather
+    /// than merely exclude zero, and a positive verdict may not end the run before this many
+    /// pairs. Ruling an effect *out* early is not restricted, because stopping early there costs
+    /// a false negative rather than a false claim.
+    /// </summary>
+    private const int MinimumPairsForEarlyStop = 4;
+
+    /// <summary>
     /// Whether more pairs would plausibly settle the question, used to stop early rather than
     /// always paying for the maximum. Stopping once the answer is clear is not a shortcut: extra
     /// pairs on a settled result cost time and add thermal drift.
     /// </summary>
     public static bool ShouldContinue(AbTestResult result, int maximumPairs)
     {
+        ArgumentNullException.ThrowIfNull(result);
+
         if (result.PairCount >= maximumPairs)
         {
             return false;
@@ -166,7 +186,13 @@ public static class PairedAbTest
         // a meaningful effect has been ruled out.
         var ruledOut = Math.Abs(result.ConfidenceLowPercent) < PracticalThresholdPercent
                        && Math.Abs(result.ConfidenceHighPercent) < PracticalThresholdPercent;
+        if (ruledOut)
+        {
+            return false;
+        }
 
-        return !result.Conclusive && !ruledOut;
+        // A positive verdict has to survive one more pair than the bare minimum before it may end
+        // the run, so a single lucky interval at three pairs cannot close the question.
+        return !(result.Conclusive && result.PairCount >= MinimumPairsForEarlyStop);
     }
 }

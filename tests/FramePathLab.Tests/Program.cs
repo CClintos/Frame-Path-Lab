@@ -83,7 +83,13 @@ internal static class Program
         ("A plan file carries identifiers and never mutations", TestPlanCarriesNoMutationsAsync),
         ("A plan built for another machine is refused", TestPlanTargetMismatchAsync),
         ("Replay reports an unrecorded surface as absent", TestReplayOfUnknownKeyAsync),
-        ("The System class is decided per device, not per class", TestSystemDevicePolicyAsync)
+        ("The System class is decided per device, not per class", TestSystemDevicePolicyAsync),
+        ("Autotune keeps a default the benchmark cannot measure", TestAutoTuneKeepsUnmeasurableDefaultAsync),
+        ("Autotune re-measures the baseline for each candidate", TestAutoTuneRebaselinesPerCandidateAsync),
+        ("Every NIC control the catalogue plans is classified writable", TestNicControlsAreWritableAsync),
+        ("A conclusive verdict needs the interval past the threshold", TestConclusiveNeedsIntervalAsync),
+        ("A full-width DWord survives write, read-back and revert", TestFullWidthDWordRoundTripAsync),
+        ("Every mutation kind the catalogue plans can be written", TestPlannedKindsAreWritableAsync)
     ];
 
     public static async Task<int> Main()
@@ -2265,5 +2271,229 @@ internal static class Program
 
         public bool IsArmed(Guid sessionId)
             => ArmCalls.Any(call => call.SessionId == sessionId);
+    }
+
+    /// <summary>
+    /// A recommended default is not a frame-rate claim, so the benchmark measuring no change is not
+    /// evidence against it. Before this, autotune reverted on that verdict — which for the two
+    /// pointer cards meant turning mouse acceleration back on because a benchmark that never moves
+    /// the mouse could not see it. That is the tool making the machine worse under the banner of
+    /// evidence, which is the one outcome it exists to prevent.
+    /// </summary>
+    private static async Task TestAutoTuneKeepsUnmeasurableDefaultAsync()
+    {
+        ClearTestRegistry();
+        try
+        {
+            await WithTemporaryDirectoryAsync(directory =>
+            {
+                var journal = new TweakJournalStore(directory);
+                var engine = new ExpertTweakEngine(
+                    new WindowsMutationExecutor(), journal, isElevated: false, new ScratchGuard());
+
+                // Everything inside the noise band: exactly what a pointer setting looks like to a
+                // workload that never touches the pointer.
+                var benchmark = new ScriptedBenchmark(
+                    BuildAnalysis("baseline.csv", 4.000, 6.000, 0.500, 250),
+                    BuildAnalysis("after.csv", 4.010, 6.010, 0.501, 249.8));
+
+                var card = BuildAutoTuneCard("AT-KEEPDEF", TweakDisposition.RecommendDefault, TweakRisk.Low);
+                var report = new AutoTuneCoordinator(engine, benchmark)
+                    .Run([card], AutoTuneLevel.Conservative, AutoTuneMode.Isolate);
+
+                AssertEqual(1, report.Applied, "the default should have been applied");
+                AssertEqual(1, report.Kept, "a default the benchmark cannot measure must be kept");
+                AssertEqual(0, report.Reverted, "no revert should have happened");
+
+                new WindowsMutationExecutor().Read(TestRegistryPlan("ATKEEPDEF", "1"), out var exists);
+                Assert(exists, "the kept change must still be on the machine");
+                return Task.CompletedTask;
+            });
+        }
+        finally
+        {
+            ClearTestRegistry();
+        }
+    }
+
+    /// <summary>
+    /// Isolate mode used to chain each candidate's before-state to the previous candidate's after,
+    /// so the machine's warm-up drift accumulated into later comparisons and a candidate's verdict
+    /// depended on its position in the queue. Each candidate now gets an adjacent baseline.
+    /// </summary>
+    private static async Task TestAutoTuneRebaselinesPerCandidateAsync()
+    {
+        ClearTestRegistry();
+        try
+        {
+            await WithTemporaryDirectoryAsync(directory =>
+            {
+                var journal = new TweakJournalStore(directory);
+                var engine = new ExpertTweakEngine(
+                    new WindowsMutationExecutor(), journal, isElevated: false, new ScratchGuard());
+
+                // Each run is a distinct capture, and each candidate measures as a clear tail
+                // improvement so both are kept and the loop runs to the end.
+                var benchmark = new ScriptedBenchmark(
+                    BuildAnalysis("r0-baseline.csv", 4.000, 6.000, 0.500, 250),
+                    BuildAnalysis("r1-after1.csv", 3.900, 5.600, 0.460, 256),
+                    BuildAnalysis("r2-baseline.csv", 3.905, 5.610, 0.462, 256),
+                    BuildAnalysis("r3-after2.csv", 3.810, 5.230, 0.424, 262));
+
+                var cards = new[]
+                {
+                    BuildAutoTuneCard("AT-RB1", TweakDisposition.OptInExperiment, TweakRisk.Low),
+                    BuildAutoTuneCard("AT-RB2", TweakDisposition.OptInExperiment, TweakRisk.Low)
+                };
+
+                new AutoTuneCoordinator(engine, benchmark)
+                    .Run(cards, AutoTuneLevel.Balanced, AutoTuneMode.Isolate);
+
+                // One opening baseline, then a measured pair per candidate with the second
+                // candidate's before-state re-measured rather than inherited: 1 + 1 + (1 + 1) = 4.
+                AssertEqual(4, benchmark.Runs,
+                    "the second candidate must get its own freshly measured before-state");
+                return Task.CompletedTask;
+            });
+        }
+        finally
+        {
+            ClearTestRegistry();
+        }
+    }
+
+    /// <summary>
+    /// A NIC prefix the catalogue builds a plan for but policy never names falls through to the
+    /// diagnostic default, which strips the plan and shows a generic reason — so the card reads as
+    /// a deliberate exclusion when it is really an oversight. NET-PNPCAP- and NET-FLOW- were both
+    /// in that state.
+    /// </summary>
+    private static Task TestNicControlsAreWritableAsync()
+    {
+        foreach (var id in (string[])["NET-MODERATION-Ethernet", "NET-EEE-Ethernet", "NET-RSC-Ethernet",
+                     "NET-FLOW-Ethernet", "NET-PNPCAP-Ethernet"])
+        {
+            var card = ExpertTweakPolicy.Apply(BuildTestCard(id, [TestRegistryPlan("nic", "0")]));
+            Assert(ExpertTweakPolicy.IsWritable(card.Definition.Disposition),
+                $"{id} builds a write plan, so policy must classify it as writable");
+            Assert(card.Plan.Count == 1, $"{id} must keep its plan after policy classification");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Conclusive means the whole interval sits past the practical threshold, which is what the
+    /// doc comment always claimed. The weaker rule it replaced only required the point estimate to
+    /// clear the threshold, so an interval reaching well below it still read as settled.
+    /// </summary>
+    private static Task TestConclusiveNeedsIntervalAsync()
+    {
+        // Tight and far past the threshold: genuinely settled.
+        var settled = PairedAbTest.Evaluate("p99_frame_ms", "P99 frame time", true,
+        [
+            new AbPair(0, 100, 94.2), new AbPair(1, 100, 94.0), new AbPair(2, 100, 94.4),
+            new AbPair(3, 100, 93.8), new AbPair(4, 100, 94.1)
+        ]);
+        Assert(settled.Conclusive, "a tight interval well past the threshold must be conclusive");
+        Assert(settled.IsImprovement, "a fall in frame time is an improvement");
+
+        // Same direction, but scattered enough that the interval reaches back under the threshold.
+        var scattered = PairedAbTest.Evaluate("p99_frame_ms", "P99 frame time", true,
+        [
+            new AbPair(0, 100, 92.0), new AbPair(1, 100, 99.4), new AbPair(2, 100, 95.0),
+            new AbPair(3, 100, 98.6), new AbPair(4, 100, 93.5)
+        ]);
+        Assert(!scattered.Conclusive,
+            "an interval reaching below the practical threshold must not be called conclusive");
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// A DWord is 32 bits with no sign but reads back through a signed int, so the catalogue's
+    /// 4294967295 comes back as -1. Without treating those as the same stored value the read-back
+    /// check calls a correct write unverified and rolls it straight back — which is what happened
+    /// to the network throttling card on any machine that did not already have it set.
+    /// </summary>
+    private static async Task TestFullWidthDWordRoundTripAsync()
+    {
+        ClearTestRegistry();
+        try
+        {
+            await WithTemporaryDirectoryAsync(directory =>
+            {
+                var journal = new TweakJournalStore(directory);
+                var engine = new ExpertTweakEngine(
+                    new WindowsMutationExecutor(), journal, isElevated: false, new ScratchGuard());
+
+                var plan = TestRegistryPlan("FullWidth", "4294967295");
+                var card = BuildTestCard("AT-DWORDMAX", [plan]);
+                var transaction = engine.Apply(card with
+                {
+                    Definition = card.Definition with { Disposition = TweakDisposition.RecommendDefault }
+                });
+
+                AssertEqual(TweakTransaction.StateApplied, transaction.State,
+                    "a full-width DWord write must verify on read-back");
+                Assert(transaction.Mutations.All(record => record.VerifiedAfterWrite),
+                    "every value in the transaction must be verified");
+
+                var reverted = engine.Revert(transaction.TransactionId, "test");
+                AssertEqual(TweakTransaction.StateReverted, reverted.State,
+                    "the full-width DWord must revert cleanly");
+                return Task.CompletedTask;
+            });
+        }
+        finally
+        {
+            ClearTestRegistry();
+        }
+    }
+
+    /// <summary>
+    /// The executor's write switch had no case for DeviceState, so every device card captured its
+    /// before-state, journalled a pending transaction, threw on the write, and then threw again on
+    /// the automatic rollback — reporting a failed revert for a change that never happened. Nothing
+    /// caught it because the device tests only exercised the allowlist and the plan shape.
+    /// </summary>
+    private static Task TestPlannedKindsAreWritableAsync()
+    {
+        // Every kind the catalogue is capable of planning a write for. A kind reaching the
+        // executor's default case is a bug, and the message it produces is the signature.
+        var kinds = new[]
+        {
+            MutationKind.RegistryValue,
+            MutationKind.SystemParameter,
+            MutationKind.PowerSchemeValue,
+            MutationKind.PowerOverlayScheme,
+            MutationKind.DeviceState
+        };
+
+        var executor = new WindowsMutationExecutor();
+        foreach (var kind in kinds)
+        {
+            // A target that cannot resolve makes the write fail for its own reasons; what must
+            // never happen is the executor reporting the whole kind as unwritable.
+            var plan = new MutationPlan(
+                "test.kind", kind, @"FRAMEPATHLAB\NOSUCHTARGET", "value", "0", "DWord", $"probe {kind}");
+
+            try
+            {
+                executor.Apply(plan, executor.Capture(plan));
+            }
+            catch (NotSupportedException exception)
+                when (exception.Message.Contains("cannot be written", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"{kind} is planned by the catalogue but the executor has no write path for it.");
+            }
+            catch (Exception)
+            {
+                // Any other failure is this probe's bogus target, which is expected.
+            }
+        }
+
+        return Task.CompletedTask;
     }
 }

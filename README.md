@@ -78,7 +78,9 @@ Anything reaching into the running game, memory integrity, speculative-execution
 .\work\dotnet\dotnet.exe run --project .\tools\FramePathLab.Cli\FramePathLab.Cli.csproj -- expert-verify <transaction-id> before.csv after.csv --revert-on-failure
 ```
 
-The verdict follows the tails. A real example — mean frame rate flat, and the change rejected:
+The verdict follows the tails, weighted by how far each moved rather than counted. P99 carries the most weight because it is the frame you feel in a duel; P99.9 is rarer and noisier; consistency and frames-over-budget largely restate what the percentiles already said. Counting them instead would let two marginal 2% improvements outvote a 20% P99 regression and report an improvement — the exact reading this tool exists to refuse. Frames-over-budget also has an absolute floor, because on a machine holding its budget, 0.05% of frames becoming 0.06% is a 20% "regression" and a rounding error.
+
+A real example — mean frame rate flat, and the change rejected:
 
 ```
 Median frame time      4.009 →  3.986    -0.57%  noise
@@ -105,9 +107,13 @@ One command: measure, apply, measure again, keep what earned its place and rever
 
 Three levels — `--conservative` (recommended defaults only), `--balanced` (adds bounded experiments), `--aggressive` (everything policy permits writing). No level can reach something the policy refuses to write.
 
-Two modes. `--bundle` applies everything and measures once: fast, and answers "was this set worth it" — but cannot say which member did the work. `--isolate` measures one change per pair, which is the only way to attribute a result, at the cost of one benchmark run per candidate.
+Two modes. `--bundle` applies everything and measures once: fast, and answers "was this set worth it" — but cannot say which member did the work. `--isolate` measures one change per pair, which is the only way to attribute a result.
+
+Isolate mode measures the before-state **immediately before each change** rather than carrying one baseline forward through the run. Chaining is cheaper by a run per candidate, but it puts the machine's warm-up drift inside the comparison and it accumulates: six identical runs on an untouched machine trend +1.5%, so the tenth candidate in a chained queue is judged against a machine 1.5% slower than the one the first candidate was judged against, and gets rejected for it. A verdict that depends on queue position is not a verdict. The cost is two benchmark runs per candidate.
 
 **Nothing is kept on the catalogue's own opinion.** A change is applied because policy permits writing it, and retained only because the measurement afterwards supports it. A change that could not be measured is reversed and reported as unmeasured — never counted as a pass, because "we applied it and couldn't tell" is precisely the failure this tool exists to avoid.
+
+**With one exception, and it matters.** A recommended default that measures as no change is kept rather than reversed. Those cards are not frame-rate claims — pointer acceleration is an input-consistency change, and the benchmark never moves the mouse, so acceleration can only ever measure as no change. Reversing it on that verdict would turn acceleration back *on* and call it evidence, which is the tool making the machine worse under its own banner. The exemption is narrow: it covers the no-measured-change verdict only. A default that actually widens the frame-time tails is still reversed, because that is a measurement the workload genuinely made.
 
 ### Paired A/B — the honest way to test one change
 
@@ -141,6 +147,10 @@ Anything below roughly 2% is indistinguishable from the machine's own variation,
 **How many pairs, and how long?** Detection margin scales as `1 / sqrt(frames × pairs)`, so total time is what buys precision — but *how* it is split matters, because the small-sample critical value is brutal. Five thirty-second runs beat two two-minute runs decisively despite being shorter overall: at two samples the 95% critical value is 12.7, at five it is 2.78. Below three pairs almost nothing can be concluded.
 
 The default is five pairs against a frame target rather than a duration, with early stopping once the interval settles. That detects a 2% change on P99 and refuses to pretend otherwise when it cannot.
+
+A result is called **conclusive only when the whole interval sits past the 2% threshold**, not merely when it excludes zero. A mean of 2.1% with an interval running from 0.3% to 3.9% is consistent with an effect far too small to act on, and calling that settled is how a tool starts manufacturing wins out of noise.
+
+Early stopping is honest about what it costs. Re-examining the interval after every pair is optional stopping: each extra look is another chance for noise alone to produce one that clears the bar, so the true false-positive rate sits above the nominal 5%. Two things hold it down — the conclusive rule above is much harder to clear than "excludes zero", and a positive verdict cannot end a run before four pairs. Ruling an effect *out* early is unrestricted, because stopping there costs a false negative rather than a false claim.
 
 ### The benchmark it runs
 
