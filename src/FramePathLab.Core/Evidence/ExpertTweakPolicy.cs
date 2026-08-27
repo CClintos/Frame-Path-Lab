@@ -133,6 +133,13 @@ public static class ExpertTweakPolicy
                 + "modern part this frequently costs more than it saves. Measure both states.");
         }
 
+        if (HasPrefix(id, "SYSTEMDEV-"))
+        {
+            return (TweakDisposition.DiagnosticOnly,
+                "Explains which System-class devices are offered and why the rest are not. Stating "
+                + "this matters because a missing item reads as an oversight rather than a decision.");
+        }
+
         if (HasPrefix(id, "DEVICE-"))
         {
             return (TweakDisposition.OptInExperiment,

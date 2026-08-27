@@ -150,7 +150,10 @@ public static class MutationAllowlist
 
             // The class travels in the value name so the guard can check it without needing to
             // re-enumerate hardware, which a restore replayed from the ledger cannot rely on doing.
-            MutationKind.DeviceState => DeviceClassPolicy.FindClassViolation(valueName),
+            // Class alone does not decide this. The System class holds both the PCI bus and a
+            // virtual drive enumerator, so the check is per device, against the instance identifier
+            // the plan targets.
+            MutationKind.DeviceState => DeviceClassPolicy.FindDeviceViolation(valueName, target),
 
             // Nothing reaches into a running process, and boot configuration is never written.
             MutationKind.ProcessAffinity or MutationKind.ProcessPriority

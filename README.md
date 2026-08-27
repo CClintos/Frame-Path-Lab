@@ -212,6 +212,23 @@ Two gates:
 
 The disable is deliberately **not persistent** — the device returns on the next restart. A wrong call costs a reboot rather than a support session, which is what makes this cheap enough to actually test.
 
+### System devices
+
+The class every tweak guide points at, and the one where class membership decides nothing: it holds both the PCI root complex, where a wrong disable means the machine does not come back, and a virtual drive enumerator, where it means nothing at all. So System is allowed **one device at a time**, keyed on the instance identifier — which, unlike the friendly name Device Manager shows, is not localised and does not change with a driver package.
+
+Two things fall out of looking at it properly:
+
+- **Most of that advice targets software.** The composite bus, UMBus, the virtual drive enumerator, the Hyper-V providers, the NDIS virtual bus — all enumerated under `ROOT`, all with no hardware behind them. They raise no interrupts and queue no deferred calls, so disabling one unloads a driver image and changes nothing measurable. They never reach the policy; the hardware-prefix filter removes them first.
+- **Nearly everything left is load-bearing.** Host bridges, ACPI roots, motherboard resource reservations, the interrupt controller, the real-time clock, the embedded controller, the management engine — refused by name, with the reason shown rather than the device silently going missing.
+
+On the development machine that is 71 System devices present and **2** offered.
+
+The one that survives on most machines is the **high precision event timer**, and it is gated on a measurement rather than on faith: it is only offered when boot configuration is confirmed not to force the platform clock *and* the performance counter is running at the 10 MHz Windows reports when it is backed by the timestamp counter. If either says the platform timer is serving the counter, the card is blocked and points at the `useplatformclock` entry instead — because removing the clock the system is currently reading is not something to try and measure. An unreadable boot state also blocks it; failing closed is the whole point.
+
+Worth being blunt about the size of this one: the effect has shrunk with every hardware generation, from a widely reported 10–15% on 2019-era platforms to low single digits or nothing today, and on Ryzen it was always smaller than on the Intel platforms the advice grew up on. It is offered because it is measurable and cheap to undo, not because it is expected to help.
+
+A diagnostic card lists what was refused and why, so an absent item reads as a decision rather than an oversight.
+
 **On what this is worth:** less than the internet thinks. Mechanically it does remove that driver's interrupt activity. Whether removing it matters depends on whether the driver was doing anything, and most idle devices were not. On the development machine the filters left exactly two candidates out of everything present. It is offered as an experiment with an A/B behind it, not as a recommendation.
 
 ## Another machine

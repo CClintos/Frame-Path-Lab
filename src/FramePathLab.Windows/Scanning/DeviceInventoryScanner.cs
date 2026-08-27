@@ -46,6 +46,11 @@ public static class DeviceInventoryScanner
             var inUse = BuildInUseSet(audio, adapters);
             var devices = new List<DeviceEntry>();
 
+            // Kept so the System class can report what it refused and why, rather than the devices
+            // people expect to see simply not appearing.
+            var systemSeen = 0;
+            var systemRefused = new List<string>();
+
             for (uint index = 0; ; index++)
             {
                 var info = SpDevInfoData.Create();
@@ -56,13 +61,6 @@ public static class DeviceInventoryScanner
 
                 var deviceClass = ReadProperty(handle, ref info, DeviceInterop.SpdrpClass);
                 if (string.IsNullOrWhiteSpace(deviceClass))
-                {
-                    continue;
-                }
-
-                // Only classes the policy already permits are even materialised, so an unrecognised
-                // class never reaches a card.
-                if (DeviceClassPolicy.FindClassViolation(deviceClass) is not null)
                 {
                     continue;
                 }
@@ -79,10 +77,30 @@ public static class DeviceInventoryScanner
                     continue;
                 }
 
-                // Software-enumerated nodes raise no interrupts, so disabling one cannot help.
+                var isSystemClass = deviceClass.Equals("System", StringComparison.OrdinalIgnoreCase);
+                if (isSystemClass)
+                {
+                    systemSeen++;
+                }
+
+                // Software-enumerated nodes raise no interrupts, so disabling one cannot help. This
+                // is what removes most of the System class before policy sees it: the bulk of what
+                // circulates as System-device tweaking is enumerated under ROOT and has no hardware.
                 if (!HardwarePrefixes.Any(prefix =>
                         instanceId.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
                 {
+                    continue;
+                }
+
+                // Policy is applied per device, not per class, because the System class contains
+                // both things that are free to disable and things that stop the machine booting.
+                if (DeviceClassPolicy.FindDeviceViolation(deviceClass, instanceId) is not null)
+                {
+                    if (isSystemClass && systemRefused.Count < 12)
+                    {
+                        systemRefused.Add(name.Trim());
+                    }
+
                     continue;
                 }
 
@@ -112,7 +130,9 @@ public static class DeviceInventoryScanner
                 devices,
                 $"{devices.Count} device(s) in offerable classes; "
                 + $"{devices.Count(device => device.InUse)} currently in use, "
-                + $"{devices.Count(device => device.Disabled)} already disabled.");
+                + $"{devices.Count(device => device.Disabled)} already disabled.",
+                systemSeen,
+                systemRefused);
         }
         catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException)
         {

@@ -317,9 +317,11 @@ public sealed record DeviceEntry(
 public sealed record DeviceInventory(
     bool Available,
     IReadOnlyList<DeviceEntry> Devices,
-    string Observation)
+    string Observation,
+    int SystemDevicesSeen,
+    IReadOnlyList<string> SystemDevicesRefused)
 {
-    public static DeviceInventory Unavailable(string reason) => new(false, [], reason);
+    public static DeviceInventory Unavailable(string reason) => new(false, [], reason, 0, []);
 }
 
 public sealed record NvidiaProfileSetting(string Name, string Value, string Recommended, bool IsOptimal);

@@ -150,6 +150,7 @@ public static class ExpertTweakCatalog
         cards.AddRange(NvidiaProfileCards(context));
         cards.AddRange(ServiceCards(context));
         cards.AddRange(DeviceCards(context));
+        cards.Add(SystemDeviceNote(context));
         cards.AddRange(DebunkRegister());
 
         cards.AddRange(NetworkTweaks(context, reader));
@@ -3076,9 +3077,16 @@ public static class ExpertTweakCatalog
             yield break;
         }
 
+        var duplicateNames = inventory.Devices
+            .GroupBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
         foreach (var device in inventory.Devices)
         {
-            if (!DeviceClassPolicy.OfferableClasses.TryGetValue(device.DeviceClass, out var loss))
+            var loss = LossStatementFor(device);
+            if (loss is null)
             {
                 continue;
             }
@@ -3086,7 +3094,9 @@ public static class ExpertTweakCatalog
             var definition = new ExpertTweakDefinition(
                 $"DEVICE-{device.InstanceId}",
                 "Devices",
-                $"{device.Name}",
+                duplicateNames.Contains(device.Name)
+                    ? $"{device.Name} ({DeviceLocator(device.InstanceId)})"
+                    : device.Name,
                 "A present device keeps its driver loaded, and a loaded driver may take interrupts and "
                 + "queue deferred calls whether or not anything is using the hardware.",
                 "Disabling it removes that activity entirely. Whether that is worth anything depends "
@@ -3111,6 +3121,21 @@ public static class ExpertTweakCatalog
                         "Already disabled on this machine."),
                     [],
                     null);
+                continue;
+            }
+
+            // The timer is the one System-class device worth offering, and the one where being
+            // wrong is worst: if Windows is running the performance counter off it, taking it away
+            // is removing the clock the machine is currently reading.
+            if (device.InstanceId.StartsWith(HpetInstancePrefix, StringComparison.OrdinalIgnoreCase)
+                && PlatformClockRefusal(context) is { } clockRefusal)
+            {
+                yield return new ExpertTweakCard(
+                    definition,
+                    new TweakReading(TweakState.Blocked, "Enabled and backing the system clock",
+                        "Leave enabled", clockRefusal),
+                    [],
+                    "The performance counter may be running off this timer.");
                 continue;
             }
 
@@ -3151,6 +3176,141 @@ public static class ExpertTweakCatalog
                 [plan],
                 null);
         }
+    }
+
+    private const string HpetInstancePrefix = "ACPI\\PNP0103";
+
+    /// <summary>
+    /// The synthetic frequency Windows reports for the performance counter when it is backed by the
+    /// processor's invariant timestamp counter. Anything else means the counter is being served by a
+    /// platform timer instead.
+    /// </summary>
+    private const long TimestampCounterQpcFrequency = 10_000_000;
+
+    /// <summary>
+    /// Why the event timer must be left alone, or null when it is safe to offer.
+    ///
+    /// Fails closed. An unknown boot state is treated as a reason to refuse, because the cost of
+    /// being wrong in the permissive direction is disabling the timer the system is reading.
+    /// </summary>
+    private static string? PlatformClockRefusal(ExpertScanContext context)
+    {
+        if (context.ForcedPlatformClock == true)
+        {
+            return "Boot configuration has forced the platform clock on, so Windows is reading the "
+                   + "performance counter from this timer. Clear that first — see Forced platform "
+                   + "timer — restart, and re-scan. Removing the timer underneath a forced clock is "
+                   + "not something to try and measure.";
+        }
+
+        if (context.PerformanceCounterFrequency != TimestampCounterQpcFrequency)
+        {
+            return $"The performance counter is running at {context.PerformanceCounterFrequency:N0} Hz "
+                   + "rather than the 10 MHz Windows reports when it is backed by the timestamp "
+                   + "counter, which suggests a platform timer is serving it. Not offered.";
+        }
+
+        return context.ForcedPlatformClock is null
+            ? "The boot timer state could not be read, so whether Windows is using this timer is "
+              + "unknown. Not offered: an unreadable state is a reason to leave a clock alone."
+            : null;
+    }
+
+    /// <summary>
+    /// A short, stable fragment of the instance identifier, used only to tell apart two devices
+    /// that report the same name. The trailing segment is the enumerator's location, which is what
+    /// actually differs between them.
+    /// </summary>
+    private static string DeviceLocator(string instanceId)
+    {
+        var tail = instanceId.Split('\\').LastOrDefault() ?? instanceId;
+        return tail.Length <= 20 ? tail : tail[^20..];
+    }
+
+    private static string? LossStatementFor(DeviceEntry device)
+    {
+        if (DeviceClassPolicy.OfferableClasses.TryGetValue(device.DeviceClass, out var byClass))
+        {
+            return byClass;
+        }
+
+        // The System class is decided one device at a time; see DeviceClassPolicy for why.
+        foreach (var (prefix, loss) in DeviceClassPolicy.OfferableSystemDevices)
+        {
+            if (device.InstanceId.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return loss;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// What the System class contains and why almost none of it is offered.
+    ///
+    /// This exists because the absence of an expected item is indistinguishable from an oversight.
+    /// System devices are the single most common target in tweak guides, so a tool that silently
+    /// omits them reads as having missed them. Stating the reasoning is the honest alternative, and
+    /// it is also the more useful one: the reason most of that advice does nothing is a fact about
+    /// how those devices are enumerated, not an opinion about risk.
+    /// </summary>
+    private static ExpertTweakCard SystemDeviceNote(ExpertScanContext context)
+    {
+        var definition = new ExpertTweakDefinition(
+            "SYSTEMDEV-NOTE-001",
+            "Devices",
+            "System devices — what is offered and what is not",
+            "The System class in Device Manager mixes host bridges and ACPI roots, where a wrong "
+            + "disable means the machine does not come back, with software enumerators that have no "
+            + "hardware behind them at all.",
+            "Most of what circulates as System-device tweaking targets nodes enumerated under ROOT — "
+            + "the composite bus, the virtual drive enumerator, the user-mode bus, the Hyper-V "
+            + "providers. Those are software constructs. They raise no interrupts and queue no "
+            + "deferred calls, so disabling one unloads a driver image and changes nothing that can "
+            + "be measured. That is why they are filtered rather than offered. Of the devices in the "
+            + "class that are real hardware, nearly all are load-bearing, which leaves the event "
+            + "timer as the one candidate worth testing on most machines.",
+            "Diagnostic only. Nothing here writes.",
+            TweakRisk.Low,
+            TweakScope.Machine,
+            EvidenceQuality.Moderate,
+            false,
+            false,
+            false,
+            []);
+
+        var inventory = context.Devices;
+        if (!inventory.Available)
+        {
+            return new ExpertTweakCard(
+                definition,
+                new TweakReading(TweakState.Unknown, "Not enumerated", "Informational",
+                    inventory.Observation),
+                [],
+                null);
+        }
+
+        var offered = inventory.Devices.Count(device =>
+            DeviceClassPolicy.OfferableSystemDevices.Keys.Any(prefix =>
+                device.InstanceId.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)));
+
+        var refusedNames = inventory.SystemDevicesRefused.Count == 0
+            ? string.Empty
+            : " Refused here include " + string.Join(", ", inventory.SystemDevicesRefused.Take(6)) + ".";
+
+        return new ExpertTweakCard(
+            definition,
+            new TweakReading(
+                TweakState.NotApplicable,
+                $"{inventory.SystemDevicesSeen} System device(s) present, {offered} offered",
+                "Informational",
+                $"{inventory.SystemDevicesSeen} devices sit in the System class on this machine. "
+                + $"{offered} are offered as experiments; the rest are either software nodes with "
+                + "nothing to stop interrupting, or hardware the machine needs."
+                + refusedNames),
+            [],
+            null);
     }
 
     // ---- Excluded, with the reason stated ----------------------------------------------------

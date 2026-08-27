@@ -82,7 +82,8 @@ internal static class Program
         ("A snapshot reaches the same verdicts as the machine it came from", TestSnapshotRoundTripAsync),
         ("A plan file carries identifiers and never mutations", TestPlanCarriesNoMutationsAsync),
         ("A plan built for another machine is refused", TestPlanTargetMismatchAsync),
-        ("Replay reports an unrecorded surface as absent", TestReplayOfUnknownKeyAsync)
+        ("Replay reports an unrecorded surface as absent", TestReplayOfUnknownKeyAsync),
+        ("The System class is decided per device, not per class", TestSystemDevicePolicyAsync)
     ];
 
     public static async Task<int> Main()
@@ -1961,8 +1962,8 @@ internal static class Program
                 entry.InstanceId.Contains('\\'),
                 $"{entry.Name} has no bus-qualified instance identifier");
 
-            Assert(DeviceClassPolicy.FindClassViolation(entry.DeviceClass) is null,
-                $"{entry.Name} is in class {entry.DeviceClass}, which the policy refuses");
+            Assert(DeviceClassPolicy.FindDeviceViolation(entry.DeviceClass, entry.InstanceId) is null,
+                $"{entry.Name} ({entry.InstanceId}) is refused by the device policy");
         }
 
         foreach (var card in devices)
@@ -2138,6 +2139,55 @@ internal static class Program
                 "GAMING-PC", "AMD Ryzen 7 5800X3D", 8, 16, 34_359_738_368 - 200_000_000),
             elsewhere.Fingerprint,
             "the fingerprint must tolerate small differences in reported memory");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestSystemDevicePolicyAsync()
+    {
+        // The class as a whole stays refused, so any caller that only knows the class fails closed.
+        Assert(DeviceClassPolicy.FindClassViolation("System") is not null,
+            "the System class must not be offerable on class alone");
+
+        // The things that stop the machine coming back must be refused whatever else changes.
+        foreach (var deadly in (string[])
+                 [
+                     @"ACPI_HAL\PNP0C08\0",
+                     @"ACPI\PNP0A08\0",
+                     @"ACPI\PNP0C02\IOTRAPS",
+                     @"ACPI\PNP0100\4&104CD1ED&0",
+                     @"ACPI\PNP0B00\4&104CD1ED&0",
+                     @"ACPI\PNP0000\4&104CD1ED&0",
+                     @"ACPI\PNP0C09\0",
+                     @"PCI\VEN_8086&DEV_7D30&SUBSYS_0D631028&REV_05"
+                 ])
+        {
+            Assert(DeviceClassPolicy.FindDeviceViolation("System", deadly) is not null,
+                $"{deadly} must never be offerable");
+        }
+
+        // Unknown System devices fail closed rather than open.
+        Assert(DeviceClassPolicy.FindDeviceViolation("System", @"ACPI\VEND1234\0") is not null,
+            "an unlisted System device must be refused");
+        Assert(DeviceClassPolicy.FindDeviceViolation("System", string.Empty) is not null,
+            "a System device with no instance identifier must be refused");
+
+        // And the named ones are permitted, with a statement of what is lost.
+        foreach (var (prefix, loss) in DeviceClassPolicy.OfferableSystemDevices)
+        {
+            Assert(DeviceClassPolicy.FindDeviceViolation("System", prefix + @"\0") is null,
+                $"{prefix} is listed as offerable but the policy refuses it");
+            Assert(loss.Length > 40, $"{prefix} must state what is lost");
+        }
+
+        // The guard must agree, since a restore replays through it rather than through the scanner.
+        Assert(
+            MutationAllowlist.FindViolation(
+                MutationKind.DeviceState, @"ACPI\PNP0A08\0", "System") is not null,
+            "the allowlist must refuse the PCI root complex");
+        Assert(
+            MutationAllowlist.FindViolation(
+                MutationKind.DeviceState, @"ACPI\PNP0103\0", "System") is null,
+            "the allowlist must permit the event timer");
         return Task.CompletedTask;
     }
 
